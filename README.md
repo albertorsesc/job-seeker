@@ -5,10 +5,11 @@ scores each against your profile, works out whether you can **actually hold** th
 timezone, work authorization), then filters noise, dedupes, ranks, and reports. It is designed to be
 driven by a local AI agent over MCP, or from the command line.
 
-> **Status: early development.** The domain model is in place. The source adapters, scoring,
-> eligibility classifier, pipeline, reporters, CLI, and MCP server are not built yet, so there is no
-> working `job-seeker find` command and nothing is published to PyPI. See [CLAUDE.md](CLAUDE.md) for
-> the architecture and the build plan.
+> **Status: early development.** The domain model, the ports, and both entrypoints exist, and the
+> MCP server runs. The board adapters, scoring, eligibility classifier, pipeline and reporters do
+> not, so **`job-seeker find` does not work yet**: it refuses with a clear message rather than
+> returning an empty list, because an empty result is indistinguishable from a search that found
+> nothing. Nothing is published to PyPI. See [CLAUDE.md](CLAUDE.md) for the architecture.
 
 ## Why
 
@@ -36,13 +37,29 @@ uv venv && source .venv/bin/activate
 uv pip install -e ".[dev,mcp]"
 ```
 
-Run the gate:
+Run the gate. It fixes what a machine can fix, then runs lint, types, and the tests:
 
 ```bash
-pytest          # unit tests, no network
-ruff check .    # lint
-mypy            # types, strict
+make test
 ```
+
+## What works today
+
+```bash
+job-seeker --version
+job-seeker sources      # lists the boards and whether each can run. None are registered yet.
+job-seeker find         # refuses: the adapters and scoring are not built. Exits 2.
+```
+
+The MCP server runs and exposes `list_sources` and `describe_engine` to a local agent:
+
+```bash
+claude mcp add job-seeker -- job-seeker-mcp
+```
+
+It deliberately exposes no `find_jobs` tool while search does not work. A tool that existed and
+returned nothing would read to an agent as "no jobs match you", and the agent would relay that to
+you as fact.
 
 ## Your profile
 

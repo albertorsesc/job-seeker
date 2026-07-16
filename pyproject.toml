@@ -40,8 +40,8 @@ dev = [
 ]
 
 [project.scripts]
-job-seeker = "job_seeker.cli:main"
-job-seeker-mcp = "job_seeker.mcp.server:main"
+job-seeker = "job_seeker.infrastructure.entrypoints.cli:main"
+job-seeker-mcp = "job_seeker.infrastructure.entrypoints.mcp_server:main"
 
 [project.urls]
 Homepage = "https://github.com/albertorsesc/job-seeker"
