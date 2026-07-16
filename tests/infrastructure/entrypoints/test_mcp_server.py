@@ -63,16 +63,20 @@ class TestBuildServer:
 
 class TestListSourcesTool:
     async def test_reports_the_registered_boards(self) -> None:
-        registry.register("himalayas", lambda: FakeSource("himalayas", available=True))
-        registry.register("jobspy", lambda: FakeSource("jobspy", available=False))
+        registry.register("board-a", lambda: FakeSource("board-a", available=True))
+        registry.register("board-b", lambda: FakeSource("board-b", available=False))
 
         payload = await _structured(mcp_server.build_server(), "list_sources")
         listed = {entry["name"]: entry["available"] for entry in payload["result"]}
-        assert listed == {"himalayas": True, "jobspy": False}
+        assert listed["board-a"] is True
+        assert listed["board-b"] is False
 
-    async def test_is_empty_when_no_board_is_registered(self) -> None:
+    async def test_lists_the_built_in_boards(self) -> None:
+        """build_server() is the composition root, so it wires the built-in adapters and the
+        agent sees the real boards rather than an empty list."""
         payload = await _structured(mcp_server.build_server(), "list_sources")
-        assert payload["result"] == []
+        names = {entry["name"] for entry in payload["result"]}
+        assert "himalayas" in names
 
 
 class TestDescribeEngineTool:

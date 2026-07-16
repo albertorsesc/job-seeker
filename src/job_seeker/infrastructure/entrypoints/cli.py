@@ -17,6 +17,7 @@ from collections.abc import Sequence
 
 from job_seeker import __version__
 from job_seeker.infrastructure.sources import registry
+from job_seeker.infrastructure.sources.defaults import register_builtins
 
 
 def _build_parser() -> argparse.ArgumentParser:
@@ -68,6 +69,8 @@ def _find() -> int:
 def main(argv: Sequence[str] | None = None) -> int:
     parser = _build_parser()
     args = parser.parse_args(argv)
+
+    register_builtins()  # composition root: wire the built-in adapters to the registry
 
     if args.command == "sources":
         return _sources()

@@ -18,6 +18,7 @@ from typing import TYPE_CHECKING, Any
 
 from job_seeker import __version__
 from job_seeker.infrastructure.sources import registry
+from job_seeker.infrastructure.sources.defaults import register_builtins
 
 if TYPE_CHECKING:
     from mcp.server.fastmcp import FastMCP
@@ -35,6 +36,8 @@ def build_server() -> FastMCP:
     forever, so anything that calls it is untestable by construction.
     """
     from mcp.server.fastmcp import FastMCP
+
+    register_builtins()  # composition root: wire the built-in adapters to the registry
 
     server = FastMCP("job-seeker")
 

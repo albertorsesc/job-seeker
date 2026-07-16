@@ -12,23 +12,31 @@ from ..conftest import FakeSource
 
 
 class TestSourcesCommand:
-    def test_says_so_plainly_when_no_board_is_registered(
+    def test_lists_the_built_in_boards(self, capsys: pytest.CaptureFixture[str]) -> None:
+        """main() is the composition root: it wires the built-in adapters, so `sources` lists
+        the real boards a fresh install ships with."""
+        assert cli.main(["sources"]) == 0
+        assert "himalayas" in capsys.readouterr().out
+
+    def test_says_so_plainly_when_the_registry_is_empty(
         self, capsys: pytest.CaptureFixture[str]
     ) -> None:
-        assert cli.main(["sources"]) == 0
+        """The defensive branch, reached by calling the helper directly: main() always registers
+        the built-ins, but the message still needs to be right if a build ever ships none."""
+        assert cli._sources() == 0
         assert "No job boards are registered yet" in capsys.readouterr().out
 
     def test_lists_each_board_and_whether_it_can_run(
         self, capsys: pytest.CaptureFixture[str]
     ) -> None:
-        registry.register("himalayas", lambda: FakeSource("himalayas", available=True))
-        registry.register("jobspy", lambda: FakeSource("jobspy", available=False))
+        registry.register("board-a", lambda: FakeSource("board-a", available=True))
+        registry.register("board-b", lambda: FakeSource("board-b", available=False))
 
         assert cli.main(["sources"]) == 0
         out = capsys.readouterr().out
-        assert "himalayas" in out
+        assert "board-a" in out
         assert "available" in out
-        assert "jobspy" in out
+        assert "board-b" in out
         assert "unavailable" in out
 
     def test_an_unavailable_board_is_still_listed(self, capsys: pytest.CaptureFixture[str]) -> None:
