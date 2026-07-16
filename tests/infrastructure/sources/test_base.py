@@ -48,6 +48,11 @@ class TestToUtcDatetime:
         """A board sending a garbage timestamp must not take down a whole fetch."""
         assert base.to_utc_datetime("not a number") is None  # type: ignore[arg-type]
 
+    def test_a_bool_is_treated_as_absent_not_as_epoch_1(self) -> None:
+        """bool subclasses int, so `pubDate: true` would otherwise become a 1970 date. It is
+        absent data, not a timestamp, consistent with how the salary parser rejects bool."""
+        assert base.to_utc_datetime(True) is None
+
 
 class TestBuildClient:
     def test_sends_the_project_user_agent(self) -> None:
@@ -79,6 +84,49 @@ class TestGetJson:
             with base.build_client() as client:
                 base.get_json(client, "https://example.com/api", params={"offset": 40})
         assert route.calls.last.request.url.params["offset"] == "40"
+
+    def test_a_huge_retry_after_is_capped_not_honored_verbatim(self) -> None:
+        """The header is board-controlled and fetch runs in a worker thread. An uncapped
+        "999999999" would hang the slot for years, so it clamps to the ceiling."""
+        slept: list[float] = []
+        with respx.mock:
+            respx.get("https://example.com/api").mock(
+                side_effect=[
+                    httpx.Response(429, headers={"retry-after": "999999999"}),
+                    httpx.Response(200, json={"ok": True}),
+                ]
+            )
+            with base.build_client() as client:
+                base.get_json(client, "https://example.com/api", sleep=slept.append, max_retries=3)
+        assert slept == [base._MAX_BACKOFF]
+
+    def test_an_infinite_retry_after_clamps_instead_of_overflowing_sleep(self) -> None:
+        """`Retry-After: inf` would make time.sleep raise OverflowError straight out of the
+        adapter, breaking the never-raise contract. It must clamp to the ceiling instead."""
+        slept: list[float] = []
+        with respx.mock:
+            respx.get("https://example.com/api").mock(
+                side_effect=[
+                    httpx.Response(429, headers={"retry-after": "inf"}),
+                    httpx.Response(200, json={"ok": True}),
+                ]
+            )
+            with base.build_client() as client:
+                base.get_json(client, "https://example.com/api", sleep=slept.append, max_retries=3)
+        assert slept == [base._MAX_BACKOFF]
+
+    def test_a_nan_retry_after_falls_back_to_the_default(self) -> None:
+        slept: list[float] = []
+        with respx.mock:
+            respx.get("https://example.com/api").mock(
+                side_effect=[
+                    httpx.Response(429, headers={"retry-after": "nan"}),
+                    httpx.Response(200, json={"ok": True}),
+                ]
+            )
+            with base.build_client() as client:
+                base.get_json(client, "https://example.com/api", sleep=slept.append, max_retries=3)
+        assert slept == [base._RATE_LIMIT_BACKOFF]
 
     def test_backs_off_and_retries_on_429_then_succeeds(self) -> None:
         slept: list[float] = []

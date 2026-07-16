@@ -54,10 +54,14 @@ def build_server() -> FastMCP:
         A board reports unavailable when an optional dependency or credential is missing. It is
         still listed, because "this board exists but cannot run" and "this board does not exist"
         are different answers and the agent should be able to tell the seeker which it is.
+
+        Uses `describe()`, the same failure-isolating path the CLI's `sources` command uses. A
+        board whose constructor or availability check raises must not blind the agent to the
+        boards that work, and the two entrypoints must not disagree about that.
         """
         return [
-            {"name": source.name, "available": source.is_available()}
-            for source in registry.create_all()
+            {"name": status.name, "available": status.available, "error": status.error}
+            for status in registry.describe()
         ]
 
     @server.tool()

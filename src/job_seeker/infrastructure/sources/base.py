@@ -23,6 +23,11 @@ USER_AGENT = f"job-seeker/{__version__} (+https://github.com/albertorsesc/job-se
 _DEFAULT_TIMEOUT = 15.0
 _CONNECT_RETRIES = 1
 _RATE_LIMIT_BACKOFF = 2.0  # seconds, when a 429 gives no Retry-After
+# Hard ceiling on any honored Retry-After. The header is board-controlled, and fetch runs in a
+# ThreadPoolExecutor worker: an uncapped value ("999999999", "inf") would either hang a slot for
+# years or, with inf, make time.sleep raise OverflowError straight out of fetch, breaking the
+# never-raise contract. A board that truly wants a longer pause gets retried on the next run.
+_MAX_BACKOFF = 60.0
 
 
 def build_client(timeout: float = _DEFAULT_TIMEOUT) -> httpx.Client:
@@ -78,13 +83,19 @@ def get_json(
 
 
 def _retry_after_seconds(response: httpx.Response) -> float:
-    """Seconds to wait after a 429, honoring Retry-After when the board sends a sane one."""
+    """Seconds to wait after a 429: the board's Retry-After when sane, always capped.
+
+    Clamped to `_MAX_BACKOFF` so a hostile or buggy header cannot hang a worker. NaN and negative
+    values fall back to the default; `inf` clamps to the ceiling rather than reaching time.sleep.
+    """
     header = response.headers.get("retry-after", "")
     try:
         seconds = float(header)
     except ValueError:
         return _RATE_LIMIT_BACKOFF
-    return seconds if seconds >= 0 else _RATE_LIMIT_BACKOFF
+    if seconds != seconds or seconds < 0:  # NaN (self-inequality) or negative
+        return _RATE_LIMIT_BACKOFF
+    return min(seconds, _MAX_BACKOFF)
 
 
 def clean_html(html: str) -> str:
@@ -106,7 +117,9 @@ def to_utc_datetime(epoch: int | float | None) -> datetime | None:
     and an aware datetime raises at runtime. A garbage value returns None rather than crashing,
     because one malformed record must not take down a whole page of good ones.
     """
-    if epoch is None:
+    # bool is a subclass of int, so `True` would otherwise become a 1970 date. Exclude it, the
+    # same way the salary parser does, so a `pubDate: true` is treated as absent, not as an epoch.
+    if epoch is None or isinstance(epoch, bool):
         return None
     try:
         return datetime.fromtimestamp(float(epoch), tz=UTC)

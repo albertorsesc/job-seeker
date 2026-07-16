@@ -30,11 +30,13 @@ exception you have to catch.
 # rather than a smell. Kept private so registration goes through `register`, which is what
 # makes the duplicate-name check possible.
 #
-# **Register at import time only. Reads are concurrent.** The orchestrator fans sources out
-# across a ThreadPoolExecutor and only ever reads. Registration happening under the import lock
-# is what makes that safe without a lock of its own; registering from a worker thread would make
-# `sorted(_FACTORIES)` liable to "dictionary changed size during iteration". This invariant is
-# load-bearing, which is why it is written down rather than assumed.
+# **Concurrency invariant: all registration happens single-threaded, before any concurrent read.**
+# The composition root (the CLI and MCP entrypoints) calls `register_builtins` once at startup,
+# on the main thread, before the orchestrator fans `create_all()` out across a ThreadPoolExecutor.
+# So `_FACTORIES` is quiescent during concurrent reads and needs no lock. This holds by
+# construction, not by an import lock: a plugin or a self-registering source that wrote to
+# `_FACTORIES` from a worker thread would break it, making `sorted(_FACTORIES)` liable to
+# "dictionary changed size during iteration". Register at startup, never from a worker.
 _FACTORIES: dict[str, SourceFactory] = {}
 
 

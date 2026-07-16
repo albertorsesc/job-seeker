@@ -14,6 +14,7 @@ from typing import Any, cast
 from mcp.server.fastmcp import FastMCP
 
 from job_seeker import __version__
+from job_seeker.domain.models import SearchQuery, SourceResult
 from job_seeker.infrastructure.entrypoints import mcp_server
 from job_seeker.infrastructure.sources import registry
 
@@ -77,6 +78,27 @@ class TestListSourcesTool:
         payload = await _structured(mcp_server.build_server(), "list_sources")
         names = {entry["name"] for entry in payload["result"]}
         assert "himalayas" in names
+
+    async def test_a_broken_adapter_does_not_crash_the_tool(self) -> None:
+        """The CLI and MCP must not disagree on robustness. `sources` degrades past a broken
+        adapter; `list_sources` used the fail-fast path and crashed, blinding the agent to every
+        working board. It now uses the same isolating `describe()` the CLI does."""
+
+        class BrokenAvailability:
+            name = "brokenboard"
+
+            def is_available(self) -> bool:
+                raise OSError("credentials missing")
+
+            def fetch(self, query: SearchQuery, /) -> SourceResult:
+                return SourceResult(source="brokenboard")
+
+        registry.register("brokenboard", BrokenAvailability)
+        payload = await _structured(mcp_server.build_server(), "list_sources")
+        listed = {entry["name"]: entry for entry in payload["result"]}
+        assert listed["brokenboard"]["available"] is False
+        assert "credentials missing" in listed["brokenboard"]["error"]
+        assert "himalayas" in listed  # the working board is still reported
 
 
 class TestDescribeEngineTool:

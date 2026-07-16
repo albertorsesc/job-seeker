@@ -70,10 +70,14 @@ class HimalayasSource:
                     scanned += len(page)
 
                     kept_any = False
+                    parsed_any = False
                     records_after_break = 0
                     for index, record in enumerate(page):
                         job = _normalize(record)
-                        if job is None or _is_stale(job, cutoff):
+                        if job is None:
+                            continue  # unparseable: a data blip, not a signal about recency
+                        parsed_any = True
+                        if _is_stale(job, cutoff):
                             continue
                         kept_any = True
                         jobs.append(job)
@@ -87,8 +91,12 @@ class HimalayasSource:
                         # the last record of a short final page leaves nothing, so not truncated.
                         truncated = records_after_break > 0 or len(page) >= _PAGE_SIZE
                         break
-                    if not kept_any:
-                        break  # recency-ordered: a full page with nothing fresh means we are past it
+                    if parsed_any and not kept_any:
+                        # Recency-ordered: a page of real postings all older than the window means
+                        # everything after it is older too. An all-unparseable page is NOT this
+                        # signal (it may be a transient blip with fresh jobs behind it), so it does
+                        # not stop the scan; the scan cap and short-page checks still bound it.
+                        break
                     if scanned >= self._scan_cap:
                         truncated = True  # stopped on the scan ceiling, not on running out
                         break
