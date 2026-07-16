@@ -49,9 +49,9 @@ def profile() -> Profile:
         location=LocationProfile(country="Testland", timezone_utc_offset=-6.0),
         eligibility=EligibilityRules(
             eligible_regions=["testland", "worldwide", "anywhere"],
-            exclude_us_only=True,
-            exclude_timezone_locked=True,
-            acceptable_timezone_offsets=[-7.0, -6.0, -5.0],
+            disqualifying_authorization_terms=["us citizen", "security clearance"],
+            location_lock_terms=["us only", "eu only"],
+            max_timezone_distance_hours=1.0,
         ),
         # Mixed case on purpose. `Job.search_text` is lower-cased, so a scorer that compiles
         # these without re.IGNORECASE scores every real profile at zero: people write "RAG",

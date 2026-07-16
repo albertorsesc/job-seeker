@@ -10,11 +10,16 @@ the internal layout stays free to change:
 from job_seeker.domain.models import (
     ELIGIBLE_STATUSES,
     Eligibility,
+    EligibilityHints,
     EligibilityStatus,
     FitScore,
     Job,
     ScoredJob,
     SearchQuery,
+    SearchResult,
+    SourceCoverage,
+    SourceOutcome,
+    SourceResult,
 )
 from job_seeker.domain.profile import (
     EligibilityRules,
@@ -25,6 +30,7 @@ from job_seeker.domain.profile import (
 __all__ = [
     "ELIGIBLE_STATUSES",
     "Eligibility",
+    "EligibilityHints",
     "EligibilityRules",
     "EligibilityStatus",
     "FitScore",
@@ -33,4 +39,8 @@ __all__ = [
     "Profile",
     "ScoredJob",
     "SearchQuery",
+    "SearchResult",
+    "SourceCoverage",
+    "SourceOutcome",
+    "SourceResult",
 ]

@@ -6,15 +6,76 @@ import json
 from collections.abc import Callable
 
 import pytest
+from pydantic import ValidationError
 
 from job_seeker.domain.models import (
     ELIGIBLE_STATUSES,
     Eligibility,
+    EligibilityHints,
     EligibilityStatus,
     FitScore,
     Job,
     ScoredJob,
 )
+
+
+class TestEligibilityHints:
+    """What a board published about who may hold a role.
+
+    Three states, and conflating any two of them is the failure this class exists to prevent:
+    `None` (the board said nothing, so fall back to reading the text), `[]` (the board said
+    explicitly there is no restriction), and a populated list (restricted to these). The old
+    two-fields-on-Job shape defaulted to `[]`, so a board that simply has no such field looked
+    identical to a board declaring the role open to everyone, and every posting from the four
+    boards without structured data was silently promoted to unrestricted.
+    """
+
+    def test_a_board_that_says_nothing_is_the_default(self) -> None:
+        hints = EligibilityHints()
+        assert hints.location_restrictions is None
+        assert hints.timezone_restrictions is None
+
+    def test_none_is_distinct_from_empty(self) -> None:
+        """The load-bearing distinction: unknown is not the same as unrestricted."""
+        silent = EligibilityHints()
+        unrestricted = EligibilityHints(location_restrictions=(), timezone_restrictions=())
+        assert silent.location_restrictions is None
+        assert unrestricted.location_restrictions == ()
+        assert silent != unrestricted
+
+    def test_carries_a_stated_location_restriction(self) -> None:
+        hints = EligibilityHints(location_restrictions=("united states", "canada"))
+        assert hints.location_restrictions == ("united states", "canada")
+
+    def test_carries_stated_timezone_restrictions(self) -> None:
+        hints = EligibilityHints(timezone_restrictions=(-5.0, -6.0))
+        assert hints.timezone_restrictions == (-5.0, -6.0)
+
+    def test_the_three_states_survive_a_json_round_trip(self) -> None:
+        """The states are read across an MCP boundary, so they must survive serialization, not
+        only in-process equality. This guards against a later `model_config` change (e.g.
+        exclude_none to trim payloads) silently collapsing `None` to absent on the wire."""
+        for hints in (
+            EligibilityHints(),
+            EligibilityHints(location_restrictions=(), timezone_restrictions=()),
+            EligibilityHints(
+                location_restrictions=("united states",), timezone_restrictions=(-6.0,)
+            ),
+        ):
+            assert EligibilityHints.model_validate_json(hints.model_dump_json()) == hints
+        assert EligibilityHints().model_dump()["location_restrictions"] is None
+        assert (
+            EligibilityHints(location_restrictions=()).model_dump()["location_restrictions"] == ()
+        )
+
+    def test_is_genuinely_immutable_not_only_unrebindable(self) -> None:
+        """`frozen=True` alone blocks rebinding but not `restrictions.append(...)`, and leaves the
+        model unhashable. Tuple members close both holes, so this asserts all three."""
+        hints = EligibilityHints(location_restrictions=("united states",))
+        with pytest.raises(ValidationError):
+            hints.location_restrictions = ()  # rebinding the field is blocked
+        assert not hasattr(hints.location_restrictions, "append")  # the value cannot be mutated
+        assert hash(hints)  # and the value object is hashable
 
 
 class TestEligibilityStatusRendering:
@@ -78,6 +139,34 @@ class TestEligibleStatuses:
             EligibilityStatus.EXCLUDED_TIMEZONE,
             EligibilityStatus.EXCLUDED_AUTHORIZATION,
         }
+
+
+class TestJobCarriesHints:
+    def test_a_job_reports_nothing_by_default(self, make_job: Callable[..., Job]) -> None:
+        """A board that provides no structured data yields a job whose hints are all unknown, so
+        the classifier falls back to reading the text rather than assuming the role is open."""
+        hints = make_job().hints
+        assert hints.location_restrictions is None
+        assert hints.timezone_restrictions is None
+
+    def test_a_job_carries_a_boards_structured_restrictions(
+        self, make_job: Callable[..., Job]
+    ) -> None:
+        job = make_job(
+            hints=EligibilityHints(
+                location_restrictions=("united states",), timezone_restrictions=()
+            )
+        )
+        assert job.hints.location_restrictions == ("united states",)
+        assert job.hints.timezone_restrictions == ()
+
+    def test_the_old_flat_restriction_fields_are_gone(self, make_job: Callable[..., Job]) -> None:
+        """They lived on Job because one board (Himalayas) had them, and defaulted to `[]`,
+        which lied for every other board. The data now lives in `hints`, with `None` for
+        unknown."""
+        job = make_job()
+        assert not hasattr(job, "location_restrictions")
+        assert not hasattr(job, "timezone_restrictions")
 
 
 class TestJobFingerprint:

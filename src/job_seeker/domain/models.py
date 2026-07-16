@@ -10,7 +10,7 @@ import hashlib
 from datetime import datetime
 from enum import StrEnum
 
-from pydantic import BaseModel, Field, computed_field
+from pydantic import BaseModel, ConfigDict, Field, computed_field
 
 
 class EligibilityStatus(StrEnum):
@@ -55,6 +55,35 @@ class SearchQuery(BaseModel):
     max_age_days: int | None = Field(default=30, ge=1)
 
 
+class EligibilityHints(BaseModel):
+    """What a board published about who may hold a role.
+
+    Three states, and collapsing any two of them is a bug the whole eligibility layer is built
+    to avoid:
+
+    - `None`: the board said nothing. Fall back to reading the posting text.
+    - `[]`: the board said explicitly there is no restriction. The role is open.
+    - `["united states", ...]`: restricted to these.
+
+    Most boards publish no structured eligibility data, so `None` is the default. Defaulting to
+    `[]` instead, as an earlier shape did, made "the board has no such field" indistinguishable
+    from "the board declared the role open to everyone", and silently promoted every posting
+    from those boards to unrestricted. Empty is a claim; absent is not.
+
+    Frozen, and tuples rather than lists, so these are genuinely immutable: they are facts a
+    board reported, not values the pipeline revises. `frozen=True` alone would block rebinding
+    the attribute but not `hints.location_restrictions.append(...)`, and it would leave the model
+    unhashable. Tuples close both. An adapter turns a board's list into a tuple at construction,
+    which is the right place to mark mutable wire data becoming a settled fact. The JSON wire is
+    an array regardless.
+    """
+
+    model_config = ConfigDict(frozen=True)
+
+    location_restrictions: tuple[str, ...] | None = None
+    timezone_restrictions: tuple[float, ...] | None = None
+
+
 class Job(BaseModel):
     """A canonical, source-agnostic job posting.
 
@@ -72,9 +101,9 @@ class Job(BaseModel):
     posted_at: datetime | None = None
     seniority: str = ""
     employment_type: str = ""
-    # Structured eligibility hints when a source provides them (e.g. Himalayas).
-    location_restrictions: list[str] = Field(default_factory=list)
-    timezone_restrictions: list[float] = Field(default_factory=list)
+    # What the board said about who may hold the role. See EligibilityHints for why absent and
+    # empty are different facts and must not collapse.
+    hints: EligibilityHints = Field(default_factory=EligibilityHints)
 
     @property
     def fingerprint(self) -> str:
