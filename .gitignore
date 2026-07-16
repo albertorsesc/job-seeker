@@ -1,0 +1,51 @@
+# --- Personal data ---------------------------------------------------------
+# The seeker profile carries a real name, location, skills and work-eligibility
+# rules. It is configuration, not source: keep it outside the repo and point
+# JOB_SEEKER_PROFILE at it. The patterns below are a backstop for the day one
+# lands in the working tree anyway.
+.env
+.env.*
+!.env.example
+*.local.md
+profile.md
+profiles/
+*.profile.md
+!examples/profile.example.md
+
+# --- Report output ---------------------------------------------------------
+# `job-seeker find --out` writes here. Reports embed the postings a specific
+# profile matched, so they are personal too.
+report.html
+report.json
+report.csv
+/out/
+
+# --- Python ----------------------------------------------------------------
+__pycache__/
+*.py[cod]
+*$py.class
+*.so
+build/
+dist/
+*.egg-info/
+.eggs/
+
+# --- Environments ----------------------------------------------------------
+.venv/
+venv/
+env/
+
+# --- Tooling caches --------------------------------------------------------
+.mypy_cache/
+.ruff_cache/
+.pytest_cache/
+.coverage
+.coverage.*
+htmlcov/
+.tox/
+
+# --- Editors / OS ----------------------------------------------------------
+.vscode/
+.idea/
+*.swp
+.DS_Store

@@ -1,0 +1,42 @@
+job-seeker
+Copyright (c) 2026 Alberto Rosas
+Licensed under the MIT License. See LICENSE.
+
+This project is an independent work. It is not affiliated with, endorsed by, or
+sponsored by any of the projects or services named below. It does, however, owe
+them its design, and credits them here.
+
+--------------------------------------------------------------------------------
+Prior art that shaped the design
+--------------------------------------------------------------------------------
+
+JobSpy
+  https://github.com/speedyapply/JobSpy
+  Multi-board scraping across Indeed, LinkedIn, Glassdoor, ZipRecruiter and
+  Google. Used through the `python-jobspy` package as an optional source
+  adapter, installed only via the `jobspy` extra. Not vendored; no code copied.
+
+DevJobsHub
+  https://github.com/pranavv00/devjobs.site
+  The remote-first aggregation pattern over WeWorkRemotely, Remotive, RemoteOK
+  and WorkingNomads, and the general shape of HTML cleaning and relative-date
+  parsing. Independently reimplemented here; no code copied.
+
+--------------------------------------------------------------------------------
+Data sources
+--------------------------------------------------------------------------------
+
+Postings are retrieved at runtime from the public APIs and feeds listed below.
+This project redistributes none of their data; it fetches on the user's own
+machine, for that user's own use. Each service's terms of use apply to whoever
+runs the engine, and adapters are written to be polite (rate limiting, backoff
+on HTTP 429, bounded pagination).
+
+  Himalayas        https://himalayas.app
+  Remotive         https://remotive.com
+  RemoteOK         https://remoteok.com
+  WeWorkRemotely   https://weworkremotely.com
+  WorkingNomads    https://www.workingnomads.com
+
+Job posting content retrieved from these services remains the property of its
+respective owners.
