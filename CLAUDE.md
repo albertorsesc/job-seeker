@@ -96,41 +96,64 @@ project is a synthesis of what each does best, plus our own eligibility layer:
 
 ---
 
-## 4. Architecture (clean / layered, SOLID)
+## 4. Architecture (hexagonal: ports and adapters)
 
-Dependencies point inward only. `domain` depends on nothing. Nothing depends on `mcp`/`cli` except
-the process entry points.
+Three layers. Dependencies point inward only, and that is enforced by `tests/test_architecture.py`,
+which reads every module's imports out of the AST and fails when an arrow turns around. The rule is
+a test, not a promise.
 
 ```
-                 mcp/server.py   cli.py            (interface / entry points)
-                        \         /
-                     pipeline/orchestrator.py       (use-case orchestration)
-             /          |           |          |         \
-     sources/*    scoring/*    filtering/*   reporting/*   config/*
-             \__________\___________|___________/_________/
-                              domain/            (models, profile, ports) -- no deps
+        infrastructure/entrypoints/     cli.py, mcp_server.py   (driving adapters + composition root)
+                     |
+                     v  calls a use case
+        application/                    use cases + ports.py     (may import domain only)
+                     ^  satisfies a Protocol
+                     |
+        infrastructure/                 sources/ reporting/ config/   (driven adapters)
+
+        domain/                         models, profile, services      (imports nothing of ours)
 ```
 
-**SOLID mapping (state these in docs/architecture.md):**
+- **domain/** is the centre: entities, the profile, and the *reasoning*. Scoring, eligibility,
+  relevance and identity are business logic, so they live in `domain/services`, not behind ports.
+  Imports nothing of ours and no I/O library.
+- **application/** holds use cases and declares, in `ports.py`, what it needs the outside world to
+  do. It never imports infrastructure.
+- **infrastructure/** holds everything that touches the outside world, on both sides: driven
+  adapters (boards, reporters, config) and driving adapters (`entrypoints`, which is also the only
+  place allowed to name concrete adapters and wire them up).
 
-- **S (Single responsibility):** each source adapter only fetches+normalizes one board; the scorer
-  only scores; the eligibility classifier only classifies; reporters only render.
-- **O (Open/closed):** add a new board by writing one `JobSource` and registering it in
-  `sources/registry.py`. No change to pipeline, scoring, or reporting.
-- **L (Liskov):** every source is substitutable behind `JobSource.fetch(query) -> list[Job]`; a source
-  that errors or returns nothing must not break the run (orchestrator isolates failures).
-- **I (Interface segregation):** small focused Protocols in `domain/ports.py` (`JobSource`, `Scorer`,
-  `EligibilityClassifier`, `RelevanceFilter`, `Deduplicator`, `Reporter`), not one god interface.
-- **D (Dependency inversion):** the orchestrator depends on the Protocols, with concrete
-  implementations injected (constructor injection + a registry). It never imports a concrete source.
+**Why the services are not ports.** A port exists to cross the boundary. `JobSource`, `Reporter` and
+`ProfileProvider` cross it: HTTP, a file, a rendered artifact. A scorer does not; it is pure
+reasoning over data already in hand. Putting it behind a port would push the product's actual
+thinking into an adapter and leave the domain holding nothing but data classes. If a scorer ever
+needs the network (an LLM judge), it becomes a port then, and the pure implementation stays.
 
-**Concurrency decision:** source `fetch()` is **synchronous** (simple, easy for contributors and
-tests). The orchestrator runs sources **in parallel with a `ThreadPoolExecutor`**, so async never
-leaks into every layer. MCP tools call the sync pipeline.
+**Every third-party job provider sits behind `JobSource`.** Himalayas, Remotive, RemoteOK,
+WeWorkRemotely, WorkingNomads and JobSpy's boards reach the application through that Protocol and
+nothing else. A board's quirks (a 20-item page cap, boilerplate in row zero, an RSS title of
+"Company: Role") stop at its adapter. This is about providers, not libraries: pydantic in the domain
+is settled and fine.
 
-**Pipeline stages (orchestrator):** fan out sources concurrently -> collect `Job`s -> dedupe by
-`Job.fingerprint` -> score (`FitScore`) -> classify (`Eligibility`) -> filter (relevance + eligibility)
--> rank by fit desc -> return `list[ScoredJob]`.
+**SOLID mapping:**
+
+- **S:** an adapter fetches and normalizes one board; a domain service does one kind of reasoning; a
+  reporter renders and never filters.
+- **O:** a new board is one new adapter plus a registry entry. Nothing else changes. The architecture
+  test is what keeps that true.
+- **L:** every source is substitutable behind `fetch(query) -> SourceResult`, and **must not raise**:
+  a board being down is an expected outcome reported in `SourceResult.error`, not an exception, since
+  siblings are in flight on other threads.
+- **I:** small Protocols in `application/ports.py`. Structural, so an adapter satisfies one without
+  importing it, which is what keeps the arrow inward even at the type level.
+- **D:** use cases depend on Protocols; `entrypoints` injects the concrete adapters.
+
+**Concurrency:** `fetch()` is **synchronous**. The orchestrator runs sources in parallel with a
+`ThreadPoolExecutor`, so async never leaks into every layer. MCP tools call the sync use case.
+
+**Pipeline stages:** fan out sources concurrently -> collect -> dedupe -> score -> classify -> filter
+-> rank by fit desc -> return a `SearchResult` carrying both the ranked jobs and per-source coverage,
+so a run where three of five boards failed is never mistaken for a healthy one.
 
 ---
 
@@ -183,11 +206,8 @@ Maintainer-specific setup (real profile path, machine details, local MCP registr
 uv venv && source .venv/bin/activate
 uv pip install -e ".[dev,mcp,jobspy]"
 
-# unit tests (must be green, no network)
-pytest
-
-# lint + types
-ruff check . && mypy
+# the gate: ruff --fix, format, mypy strict (src + tests), pytest. Green before any commit.
+make test
 
 # real run (hits live boards): write a paginated HTML report
 # point this at your own profile, kept outside the repo (see section 5)

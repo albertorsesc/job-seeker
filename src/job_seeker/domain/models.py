@@ -10,7 +10,7 @@ import hashlib
 from datetime import datetime
 from enum import StrEnum
 
-from pydantic import BaseModel, Field
+from pydantic import BaseModel, Field, computed_field
 
 
 class EligibilityStatus(StrEnum):
@@ -104,8 +104,17 @@ class Eligibility(BaseModel):
     status: EligibilityStatus
     reason: str = ""
 
+    @computed_field  # type: ignore[prop-decorator]
     @property
     def is_eligible(self) -> bool:
+        """Serialized, not merely computed.
+
+        Which of seven statuses are holdable is domain knowledge, and the consumers that most
+        need it are on the far side of a wire: an MCP agent receiving `{"status":
+        "remote-verify"}` would otherwise have to reimplement ELIGIBLE_STATUSES to read it.
+        `computed_field` also puts it in the serialization JSON schema, so the MCP tool
+        contract documents it to the agent for free.
+        """
         return self.status in ELIGIBLE_STATUSES
 
 
@@ -116,6 +125,77 @@ class ScoredJob(BaseModel):
     fit: FitScore
     eligibility: Eligibility
 
+    @computed_field  # type: ignore[prop-decorator]
     @property
     def is_suitable(self) -> bool:
         return self.eligibility.is_eligible
+
+
+class SourceOutcome(BaseModel):
+    """What every source reports about a run of itself, whether mid-flight or in the report.
+
+    `scanned` and `truncated` are not diagnostics, they are part of the answer. A run that
+    examined 200 of a board's 103,000 postings and a run that examined all of them are
+    different facts, and without them the caller can only honestly say "here are the best of
+    whatever I happened to look at".
+
+    `error` rather than an exception: a source failing is an expected outcome, not an
+    exceptional one, because several boards are fetched concurrently and any of them can be
+    down.
+    """
+
+    source: str
+    scanned: int = 0
+    truncated: bool = False
+    error: str = ""
+
+    @computed_field  # type: ignore[prop-decorator]
+    @property
+    def failed(self) -> bool:
+        return bool(self.error)
+
+
+class SourceResult(SourceOutcome):
+    """What one source returned. The outcome, plus the postings themselves.
+
+    A failed result carries no jobs and says why.
+    """
+
+    jobs: list[Job] = Field(default_factory=list)
+
+
+class SourceCoverage(SourceOutcome):
+    """How one source performed in a finished run. The outcome, plus how many survived.
+
+    The postings are deliberately absent: they are ranked together in `SearchResult.jobs`, and
+    repeating them per source would bloat the payload and invite the two copies to disagree.
+    """
+
+    kept: int = 0
+
+
+class SearchResult(BaseModel):
+    """A finished run: the ranked postings, and the truth about how they were found.
+
+    Coverage travels with the jobs rather than going to a log, because the consumer that most
+    needs it is an agent on the far end of an MCP call which never sees stderr. A run where
+    three of five boards failed must not be indistinguishable from a healthy one, or the
+    agent will tell the seeker "here are the best jobs you can hold" on the strength of two
+    boards and no caveat.
+    """
+
+    query: SearchQuery
+    jobs: list[ScoredJob] = Field(default_factory=list)
+    coverage: list[SourceCoverage] = Field(default_factory=list)
+
+    @computed_field  # type: ignore[prop-decorator]
+    @property
+    def is_complete(self) -> bool:
+        """True only when at least one source ran, and every source that ran ran fully.
+
+        The `bool(self.coverage)` guard is the whole point: `any([])` is False, so without it
+        a run where zero sources executed, the most incomplete run there is, would report
+        itself as complete. That is the exact failure this class exists to prevent, and it is
+        silent, because an empty result with `is_complete=True` looks like "no jobs matched".
+        """
+        return bool(self.coverage) and not any(c.failed or c.truncated for c in self.coverage)

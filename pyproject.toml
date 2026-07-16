@@ -74,6 +74,14 @@ asyncio_mode = "auto"
 
 [tool.mypy]
 python_version = "3.11"
-packages = ["job_seeker"]
+# tests are checked too: the ports are Protocols, so a fake adapter conforming to one is a
+# static claim. With tests excluded, a drifted fake would pass and the ports would prove nothing.
+packages = ["job_seeker", "tests"]
 strict = true
+
+# Scoped rather than project-wide: a global ignore_missing_imports also silences first-party
+# typos, so `from job_seeker.sorces import X` would quietly become Any in a codebase whose
+# entire discipline is that imports point one way.
+[[tool.mypy.overrides]]
+module = ["bs4.*", "dateutil.*", "jobspy.*", "respx.*", "lxml.*"]
 ignore_missing_imports = true

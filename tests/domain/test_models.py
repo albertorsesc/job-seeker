@@ -43,7 +43,14 @@ class TestEligibilityStatusRendering:
         assert json.dumps({"status": EligibilityStatus.GLOBAL}) == '{"status": "global"}'
 
     def test_still_compares_equal_to_its_string(self) -> None:
-        assert EligibilityStatus.GLOBAL == "global"
+        """Guards the regression where someone swaps StrEnum for a plain Enum: every
+        `status == "global"` in the codebase would silently become False rather than error.
+
+        The ignore is mypy being wrong, not the code. strict_equality narrows both sides to
+        literal types and reports them as non-overlapping, but a StrEnum member *is* a str:
+        at runtime this is True, isinstance(member, str) is True, and it hashes as its value.
+        """
+        assert EligibilityStatus.GLOBAL == "global"  # type: ignore[comparison-overlap]
 
 
 class TestEligibleStatuses:
