@@ -56,8 +56,18 @@ class Deduplicator:
     """Merges postings that are the same job across boards, keeping the best representative."""
 
     def identity(self, job: Job) -> str:
-        """The cross-board key: normalized company and title. URL and source are ignored."""
-        return f"{_normalize_company(job.company)}|{_normalize_title(job.title)}"
+        """The cross-board key: normalized company and title. URL and source are ignored.
+
+        When the company normalizes to empty (blank, or a name that is only a legal form), the
+        title alone is too weak a key: every same-title posting would collapse into one and
+        distinct roles would be silently dropped. So a company-less job keys on its URL instead,
+        which never merges it with another posting.
+        """
+        company = _normalize_company(job.company)
+        title = _normalize_title(job.title)
+        if not company:
+            return f"url:{job.url.strip().lower()}|{title}"
+        return f"{company}|{title}"
 
     def dedupe(self, jobs: list[Job]) -> list[Job]:
         """One record per identity, preserving the order each identity was first seen.

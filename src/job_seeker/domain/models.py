@@ -6,10 +6,10 @@ package depends on these types, never the reverse.
 
 from __future__ import annotations
 
-from datetime import datetime
+from datetime import UTC, datetime
 from enum import StrEnum
 
-from pydantic import BaseModel, ConfigDict, Field, computed_field
+from pydantic import BaseModel, ConfigDict, Field, computed_field, field_validator
 
 
 class EligibilityStatus(StrEnum):
@@ -103,6 +103,20 @@ class Job(BaseModel):
     # What the board said about who may hold the role. See EligibilityHints for why absent and
     # empty are different facts and must not collapse.
     hints: EligibilityHints = Field(default_factory=EligibilityHints)
+
+    @field_validator("posted_at")
+    @classmethod
+    def _ensure_aware(cls, value: datetime | None) -> datetime | None:
+        """Stamp a naive datetime as UTC so posted_at is always tz-aware.
+
+        Adapters normalize dates from many formats and one may hand back a naive datetime.
+        Comparing a naive and an aware datetime raises at runtime, and that comparison happens
+        deep in dedup ranking and age filtering, single-threaded, where it would abort the whole
+        run. Fixing it at the boundary means nothing downstream has to guard.
+        """
+        if value is None:
+            return None
+        return value if value.tzinfo is not None else value.replace(tzinfo=UTC)
 
     @property
     def search_text(self) -> str:

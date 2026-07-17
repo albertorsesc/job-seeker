@@ -105,6 +105,28 @@ class TestMergePolicy:
         assert kept[0].url == "https://b/2"
 
 
+class TestRobustness:
+    def test_a_naive_and_an_undated_duplicate_do_not_crash_the_merge(
+        self, make_job: Callable[..., Job]
+    ) -> None:
+        """A naive posted_at compared against the aware undated sentinel raised TypeError and
+        aborted the whole run. Job now stamps naive datetimes as UTC, so the compare is safe."""
+        naive = make_job(url="https://a/1", posted_at=datetime(2026, 1, 1))  # no tzinfo
+        undated = make_job(url="https://b/2", posted_at=None)
+        kept = _dedupe([naive, undated])
+        assert len(kept) == 1
+        assert kept[0].url == "https://a/1"  # the dated one wins
+
+    def test_two_blank_company_postings_with_the_same_title_do_not_merge(
+        self, make_job: Callable[..., Job]
+    ) -> None:
+        """A company that normalizes to empty must not collapse every same-title posting into one:
+        that is the silent over-dedup this service exists to avoid."""
+        a = make_job(company="", title="AI Engineer", url="https://a/1")
+        b = make_job(company="", title="AI Engineer", url="https://b/2")
+        assert len(_dedupe([a, b])) == 2
+
+
 class TestDegenerateInputs:
     def test_empty_input_is_empty_output(self) -> None:
         assert _dedupe([]) == []

@@ -19,5 +19,7 @@ infrastructure, and this package keeps the pure default implementation.
 """
 
 from job_seeker.domain.services.deduplicator import Deduplicator
+from job_seeker.domain.services.eligibility import EligibilityClassifier
+from job_seeker.domain.services.scorer import ProfileScorer
 
-__all__ = ["Deduplicator"]
+__all__ = ["Deduplicator", "EligibilityClassifier", "ProfileScorer"]
