@@ -8,7 +8,7 @@ board's particular payload into canonical `Job`s.
 from __future__ import annotations
 
 from collections.abc import Callable
-from datetime import UTC, datetime
+from datetime import UTC, datetime, timedelta
 from typing import Any
 
 import httpx
@@ -108,6 +108,21 @@ def clean_html(html: str) -> str:
         return ""
     text = BeautifulSoup(html, "html.parser").get_text(separator=" ")
     return " ".join(text.split())
+
+
+def age_cutoff(max_age_days: int | None) -> datetime | None:
+    """The oldest acceptable posting time, or None when no age window is set."""
+    if max_age_days is None:
+        return None
+    return datetime.now(UTC) - timedelta(days=max_age_days)
+
+
+def is_stale(posted_at: datetime | None, cutoff: datetime | None) -> bool:
+    """Whether a posting is older than the window. An undated posting is never stale: age cannot
+    be judged, so it is kept and the seeker decides."""
+    if cutoff is None or posted_at is None:
+        return False
+    return posted_at < cutoff
 
 
 def to_utc_datetime(epoch: int | float | None) -> datetime | None:

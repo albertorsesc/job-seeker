@@ -1,0 +1,105 @@
+"""The RemoteOK adapter.
+
+RemoteOK is the counterpoint to Himalayas: it publishes no structured eligibility data, so its
+jobs carry hints of None and the classifier reads the posting text. Verified against the live API:
+
+- `GET https://remoteok.com/api` returns a flat list. The first element is legal boilerplate (a
+  request to link back), not a job, and is skipped.
+- One request, no pagination: the endpoint returns roughly the latest hundred postings.
+- Jobs are keyed on `position` (title), `company`, `apply_url`, `epoch` (Unix seconds), and a
+  free-text `location`. Salaries are integers, often zero for "unspecified".
+
+There is no server-side filter, so the whole feed comes back and the pipeline narrows it. That is
+why the relevance filter matters here: RemoteOK returns every category, not just engineering.
+"""
+
+from __future__ import annotations
+
+from typing import Any
+
+import httpx
+
+from job_seeker.domain.models import Job, SearchQuery, SourceResult
+from job_seeker.infrastructure.sources import base
+
+_API_URL = "https://remoteok.com/api"
+
+
+class RemoteOkSource:
+    """Fetches RemoteOK postings and normalizes them into canonical `Job`s."""
+
+    name = "remoteok"
+
+    def is_available(self) -> bool:
+        return True
+
+    def fetch(self, query: SearchQuery, /) -> SourceResult:
+        """Fetch the feed, normalize, and report. Never raises: a failure is a SourceResult.error."""
+        cutoff = base.age_cutoff(query.max_age_days)
+        try:
+            with base.build_client() as client:
+                payload = base.get_json(client, _API_URL)
+        except httpx.HTTPError as exc:
+            return SourceResult(source=self.name, error=f"{type(exc).__name__}: {exc}")
+
+        records = payload if isinstance(payload, list) else []
+        jobs: list[Job] = []
+        scanned = 0
+        for record in records:
+            job = _normalize(record)
+            if job is None:
+                continue  # boilerplate element, or an unusable record
+            scanned += 1
+            if base.is_stale(job.posted_at, cutoff):
+                continue
+            jobs.append(job)
+            if len(jobs) >= query.max_results_per_source:
+                break
+
+        truncated = len(jobs) >= query.max_results_per_source and scanned < _countable(records)
+        return SourceResult(source=self.name, jobs=jobs, scanned=scanned, truncated=truncated)
+
+
+def _countable(records: list[Any]) -> int:
+    """How many records are actual job dicts (excludes the leading boilerplate)."""
+    return sum(1 for record in records if isinstance(record, dict) and record.get("position"))
+
+
+def _normalize(record: Any) -> Job | None:
+    """One API record into a canonical Job, or None for boilerplate or an unusable record.
+
+    Every access is defended: `fetch` runs in a thread-pool worker and must not raise on the
+    untrusted feed (the first element is not a job, and a record may be any shape).
+    """
+    if not isinstance(record, dict):
+        return None
+    title = str(record.get("position") or "").strip()
+    url = str(record.get("apply_url") or record.get("url") or "").strip()
+    if not title or not url:
+        return None
+
+    return Job(
+        title=title,
+        company=str(record.get("company") or "").strip(),
+        url=url,
+        source=RemoteOkSource.name,
+        description=base.clean_html(str(record.get("description") or "")),
+        location=str(record.get("location") or "").strip(),
+        salary=_salary(record),
+        posted_at=base.to_utc_datetime(record.get("epoch")),
+    )
+
+
+def _salary(record: dict[str, Any]) -> str:
+    minimum = _positive(record.get("salary_min"))
+    maximum = _positive(record.get("salary_max"))
+    if not minimum and not maximum:
+        return ""  # RemoteOK uses 0 for "unspecified"
+    if minimum and maximum and minimum != maximum:
+        return f"USD {minimum:,} - {maximum:,}"
+    value = minimum or maximum
+    return f"USD {value:,}"
+
+
+def _positive(value: Any) -> int | None:
+    return value if isinstance(value, int) and not isinstance(value, bool) and value > 0 else None

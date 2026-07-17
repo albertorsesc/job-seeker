@@ -18,7 +18,6 @@ from __future__ import annotations
 
 import time
 from collections.abc import Callable
-from datetime import UTC, datetime, timedelta
 from typing import Any
 
 import httpx
@@ -55,7 +54,7 @@ class HimalayasSource:
 
     def fetch(self, query: SearchQuery, /) -> SourceResult:
         """Paginate, normalize, and report. Never raises: a failure is a SourceResult.error."""
-        cutoff = _age_cutoff(query.max_age_days)
+        cutoff = base.age_cutoff(query.max_age_days)
         jobs: list[Job] = []
         scanned = 0
         truncated = False
@@ -77,7 +76,7 @@ class HimalayasSource:
                         if job is None:
                             continue  # unparseable: a data blip, not a signal about recency
                         parsed_any = True
-                        if _is_stale(job, cutoff):
+                        if base.is_stale(job.posted_at, cutoff):
                             continue
                         kept_any = True
                         jobs.append(job)
@@ -115,18 +114,6 @@ class HimalayasSource:
         )
         jobs = payload.get("jobs") if isinstance(payload, dict) else payload
         return jobs if isinstance(jobs, list) else []
-
-
-def _age_cutoff(max_age_days: int | None) -> datetime | None:
-    if max_age_days is None:
-        return None
-    return datetime.now(UTC) - timedelta(days=max_age_days)
-
-
-def _is_stale(job: Job, cutoff: datetime | None) -> bool:
-    if cutoff is None or job.posted_at is None:
-        return False  # no window, or no date to judge: keep it and let the seeker decide
-    return job.posted_at < cutoff
 
 
 def _normalize(record: Any) -> Job | None:
