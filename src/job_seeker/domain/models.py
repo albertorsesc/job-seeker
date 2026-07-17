@@ -6,7 +6,6 @@ package depends on these types, never the reverse.
 
 from __future__ import annotations
 
-import hashlib
 from datetime import datetime
 from enum import StrEnum
 
@@ -104,15 +103,6 @@ class Job(BaseModel):
     # What the board said about who may hold the role. See EligibilityHints for why absent and
     # empty are different facts and must not collapse.
     hints: EligibilityHints = Field(default_factory=EligibilityHints)
-
-    @property
-    def fingerprint(self) -> str:
-        """Stable identity for dedup: URL when present, else title+company."""
-        basis = (
-            self.url.strip().lower()
-            or f"{self.title.strip().lower()}|{self.company.strip().lower()}"
-        )
-        return hashlib.sha1(basis.encode("utf-8")).hexdigest()
 
     @property
     def search_text(self) -> str:

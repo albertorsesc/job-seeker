@@ -17,3 +17,7 @@ A service that later needs to cross the boundary (an LLM-backed scorer, say) doe
 here. It becomes an outbound port in `job_seeker.application.ports` with an adapter in
 infrastructure, and this package keeps the pure default implementation.
 """
+
+from job_seeker.domain.services.deduplicator import Deduplicator
+
+__all__ = ["Deduplicator"]

@@ -169,65 +169,6 @@ class TestJobCarriesHints:
         assert not hasattr(job, "timezone_restrictions")
 
 
-class TestJobFingerprint:
-    def test_is_stable_across_instances(self, make_job: Callable[..., Job]) -> None:
-        assert make_job().fingerprint == make_job().fingerprint
-
-    def test_ignores_url_case_and_surrounding_whitespace(
-        self, make_job: Callable[..., Job]
-    ) -> None:
-        a = make_job(url="https://example.com/jobs/1")
-        b = make_job(url="  HTTPS://EXAMPLE.COM/JOBS/1 ")
-        assert a.fingerprint == b.fingerprint
-
-    def test_same_url_from_different_sources_collapses(self, make_job: Callable[..., Job]) -> None:
-        assert make_job(source="himalayas").fingerprint == make_job(source="remotive").fingerprint
-
-    def test_falls_back_to_title_and_company_when_url_is_empty(
-        self, make_job: Callable[..., Job]
-    ) -> None:
-        assert make_job(url="").fingerprint == make_job(url="", source="other").fingerprint
-
-    def test_the_fallback_still_tells_postings_apart(self, make_job: Callable[..., Job]) -> None:
-        """Without this, a fallback returning a constant would pass the test above."""
-        assert make_job(url="", title="A").fingerprint != make_job(url="", title="B").fingerprint
-        assert (
-            make_job(url="", company="A").fingerprint != make_job(url="", company="B").fingerprint
-        )
-
-    def test_different_roles_at_one_company_do_not_collide(
-        self, make_job: Callable[..., Job]
-    ) -> None:
-        a = make_job(title="AI Engineer", url="https://example.com/jobs/1")
-        b = make_job(title="Data Engineer", url="https://example.com/jobs/2")
-        assert a.fingerprint != b.fingerprint
-
-    def test_one_role_at_different_companies_does_not_collide(
-        self, make_job: Callable[..., Job]
-    ) -> None:
-        a = make_job(company="Acme", url="https://example.com/jobs/1")
-        b = make_job(company="Globex", url="https://example.com/jobs/2")
-        assert a.fingerprint != b.fingerprint
-
-    @pytest.mark.xfail(
-        strict=True,
-        reason=(
-            "Fingerprint keys on URL first, so one posting aggregated from several boards yields "
-            "a different fingerprint per board and survives dedup as duplicates. Cross-board "
-            "dedup needs a normalized company+title key with URL only as a tiebreak."
-        ),
-    )
-    def test_same_posting_from_different_boards_collapses(
-        self, make_job: Callable[..., Job]
-    ) -> None:
-        boards = [
-            make_job(source="himalayas", url="https://himalayas.app/jobs/acme-ai-engineer"),
-            make_job(source="remotive", url="https://remotive.com/remote-jobs/12345"),
-            make_job(source="remoteok", url="https://remoteok.com/l/98765"),
-        ]
-        assert len({job.fingerprint for job in boards}) == 1
-
-
 class TestJobSearchText:
     def test_is_lower_cased(self, make_job: Callable[..., Job]) -> None:
         assert make_job(title="AI Engineer").search_text.startswith("ai engineer")
