@@ -17,6 +17,9 @@ import sys
 from typing import TYPE_CHECKING, Any
 
 from job_seeker import __version__
+from job_seeker.domain.models import SearchQuery
+from job_seeker.infrastructure.config.profile_loader import MarkdownProfileProvider
+from job_seeker.infrastructure.entrypoints.search import execute_search
 from job_seeker.infrastructure.sources import registry
 from job_seeker.infrastructure.sources.defaults import register_builtins
 
@@ -66,21 +69,41 @@ def build_server() -> FastMCP:
 
     @server.tool()
     def describe_engine() -> dict[str, Any]:
-        """Report what this engine is and what it can currently do.
-
-        Exists so an agent can discover that `find_jobs` is not available yet rather than
-        calling it and interpreting the failure. job-seeker is early in development.
-        """
+        """Report what this engine is and what it can currently do."""
         return {
             "version": __version__,
             "registered_sources": registry.names(),
-            "can_search": False,
-            "note": (
-                "Board adapters, scoring and eligibility are still being built. No search tool "
-                "is exposed yet, because returning an empty result would be indistinguishable "
-                "from a search that found nothing."
-            ),
+            "can_search": True,
+            "note": "Call find_jobs to search. It reads the profile from JOB_SEEKER_PROFILE.",
         }
+
+    @server.tool()
+    def find_jobs(
+        terms: list[str] | None = None,
+        limit: int = 50,
+        max_age_days: int = 30,
+        sources: list[str] | None = None,
+    ) -> dict[str, Any]:
+        """Search the job boards and return the postings the seeker can actually hold, ranked.
+
+        The seeker's profile is read from the JOB_SEEKER_PROFILE environment variable; it is the
+        profile, not the caller, that decides what "suitable" means. `terms` overrides the
+        profile's default search terms. Each result carries a fit score and an eligibility verdict
+        with a reason. The `coverage` and `is_complete` fields say how much of each board was
+        scanned, so a partial run (a board down, a scan truncated) is never mistaken for a
+        thorough one.
+        """
+        profile = MarkdownProfileProvider.from_env().load()
+        # terms fall back to the profile's; if both are empty the relevance filter simply does not
+        # narrow, returning every eligible job. No invented default term, which would be one
+        # person's search baked into a reusable engine.
+        query = SearchQuery(
+            terms=terms or profile.search_terms,
+            max_results_per_source=limit,
+            max_age_days=max_age_days,
+        )
+        result = execute_search(profile, query, sources)
+        return result.model_dump(mode="json")
 
     return server
 

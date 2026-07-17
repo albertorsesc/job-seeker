@@ -20,6 +20,7 @@ infrastructure, and this package keeps the pure default implementation.
 
 from job_seeker.domain.services.deduplicator import Deduplicator
 from job_seeker.domain.services.eligibility import EligibilityClassifier
+from job_seeker.domain.services.relevance import RelevanceFilter
 from job_seeker.domain.services.scorer import ProfileScorer
 
-__all__ = ["Deduplicator", "EligibilityClassifier", "ProfileScorer"]
+__all__ = ["Deduplicator", "EligibilityClassifier", "ProfileScorer", "RelevanceFilter"]

@@ -4,8 +4,6 @@ from __future__ import annotations
 
 from collections.abc import Callable
 
-import pytest
-
 from job_seeker.domain.models import Job
 from job_seeker.domain.profile import Profile
 from job_seeker.domain.services.scorer import ProfileScorer
@@ -44,11 +42,3 @@ class TestScoring:
         profile = Profile(skills={"acme": 5})
         job = make_job(company="Acme", title="Engineer", description="", location="")
         assert ProfileScorer(profile).score(job).value == 0
-
-
-class TestInvalidProfile:
-    def test_an_invalid_regex_fails_at_construction_naming_the_pattern(self) -> None:
-        """A bad pattern from hand-written YAML must fail loudly at setup, before a run starts,
-        with the offending pattern named, not as a bare re.error deep inside scoring."""
-        with pytest.raises(ValueError, match=r"\(python"):
-            ProfileScorer(Profile(skills={"(python": 3}))

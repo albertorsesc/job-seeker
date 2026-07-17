@@ -9,14 +9,16 @@ from __future__ import annotations
 
 import subprocess
 import sys
+from pathlib import Path
 from typing import Any, cast
 
+import pytest
 from mcp.server.fastmcp import FastMCP
 
 from job_seeker import __version__
-from job_seeker.domain.models import SearchQuery, SourceResult
+from job_seeker.domain.models import EligibilityHints, Job, SearchQuery, SourceResult
 from job_seeker.infrastructure.entrypoints import mcp_server
-from job_seeker.infrastructure.sources import registry
+from job_seeker.infrastructure.sources import defaults, registry
 
 from ..conftest import FakeSource
 
@@ -46,15 +48,9 @@ class TestBuildServer:
         options = mcp_server.build_server()._mcp_server.create_initialization_options()
         assert options.server_version == __version__
 
-    async def test_exposes_the_tools_an_agent_needs_to_orient(self) -> None:
+    async def test_exposes_the_tools_an_agent_needs(self) -> None:
         tools = await mcp_server.build_server().list_tools()
-        assert {tool.name for tool in tools} == {"list_sources", "describe_engine"}
-
-    async def test_exposes_no_search_tool_while_search_does_not_work(self) -> None:
-        """An agent must not be handed a find_jobs it can call. A tool that exists and returns
-        nothing reads as "no jobs match you", which is a lie the agent would relay verbatim."""
-        tools = await mcp_server.build_server().list_tools()
-        assert "find_jobs" not in {tool.name for tool in tools}
+        assert {tool.name for tool in tools} == {"list_sources", "describe_engine", "find_jobs"}
 
     async def test_every_tool_carries_a_description_for_the_agent(self) -> None:
         """The docstring is the agent's only signal about when to call a tool."""
@@ -102,12 +98,40 @@ class TestListSourcesTool:
 
 
 class TestDescribeEngineTool:
-    async def test_tells_the_agent_search_does_not_work_yet(self) -> None:
-        """So an agent can discover the limit rather than calling find_jobs and interpreting a
-        failure it has no way to distinguish from "nothing matched"."""
+    async def test_reports_that_search_works_and_the_version(self) -> None:
         payload = await _structured(mcp_server.build_server(), "describe_engine")
-        assert payload["can_search"] is False
+        assert payload["can_search"] is True
         assert payload["version"] == __version__
+
+
+class TestFindJobsTool:
+    async def test_returns_ranked_eligible_jobs_from_the_configured_profile(
+        self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        """find_jobs reads the profile from JOB_SEEKER_PROFILE and searches the registered boards.
+
+        A fake board is wired in so the tool runs offline; the point is that it composes profile +
+        sources + pipeline into a structured result, not that it hits a real board.
+        """
+        profile_file = tmp_path / "p.md"
+        profile_file.write_text(
+            "---\nlocation:\n  country: Testland\nsearch_terms: [Engineer]\n"
+            "skills:\n  '\\bpython\\b': 3\n---\n"
+        )
+        monkeypatch.setenv("JOB_SEEKER_PROFILE", str(profile_file))
+
+        job = Job(
+            title="Python Engineer",
+            company="Acme",
+            url="https://a/1",
+            source="fake",
+            hints=EligibilityHints(location_restrictions=()),
+        )
+        monkeypatch.setattr(defaults, "_BUILTINS", {"fake": lambda: FakeSource("fake", jobs=[job])})
+
+        payload = await _structured(mcp_server.build_server(), "find_jobs")
+        assert payload["jobs"][0]["job"]["title"] == "Python Engineer"
+        assert payload["jobs"][0]["eligibility"]["status"] == "global"
 
 
 class TestTheSdkImportStaysLazy:

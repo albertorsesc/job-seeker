@@ -10,7 +10,7 @@ from __future__ import annotations
 
 import pytest
 
-from job_seeker.domain.models import SearchQuery, SourceResult
+from job_seeker.domain.models import Job, SearchQuery, SourceResult
 from job_seeker.infrastructure.sources import registry
 
 
@@ -22,9 +22,12 @@ class FakeSource:
     no double at all.
     """
 
-    def __init__(self, name: str = "fake", available: bool = True) -> None:
+    def __init__(
+        self, name: str = "fake", available: bool = True, jobs: list[Job] | None = None
+    ) -> None:
         self._name = name
         self._available = available
+        self._jobs = jobs or []
 
     @property
     def name(self) -> str:
@@ -34,7 +37,7 @@ class FakeSource:
         return self._available
 
     def fetch(self, query: SearchQuery, /) -> SourceResult:
-        return SourceResult(source=self._name)
+        return SourceResult(source=self._name, jobs=list(self._jobs), scanned=len(self._jobs))
 
 
 @pytest.fixture(autouse=True)

@@ -83,5 +83,5 @@ strict = true
 # typos, so `from job_seeker.sorces import X` would quietly become Any in a codebase whose
 # entire discipline is that imports point one way.
 [[tool.mypy.overrides]]
-module = ["bs4.*", "dateutil.*", "jobspy.*", "respx.*", "lxml.*"]
+module = ["bs4.*", "dateutil.*", "jobspy.*", "respx.*", "lxml.*", "yaml.*"]
 ignore_missing_imports = true

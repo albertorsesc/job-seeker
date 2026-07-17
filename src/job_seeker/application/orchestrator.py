@@ -26,7 +26,12 @@ from job_seeker.domain.models import (
     SourceResult,
 )
 from job_seeker.domain.profile import Profile
-from job_seeker.domain.services import Deduplicator, EligibilityClassifier, ProfileScorer
+from job_seeker.domain.services import (
+    Deduplicator,
+    EligibilityClassifier,
+    ProfileScorer,
+    RelevanceFilter,
+)
 
 # Bound the fan-out: enough to run every board concurrently without spawning an unbounded pool if
 # a deployment ever registers dozens. Sources are I/O-bound, so threads (not processes) fit.
@@ -49,12 +54,14 @@ class JobSeeker:
         self,
         sources: list[JobSource],
         deduplicator: Deduplicator,
+        relevance: RelevanceFilter,
         scorer: ProfileScorer,
         classifier: EligibilityClassifier,
         profile: Profile,
     ) -> None:
         self._sources = sources
         self._dedup = deduplicator
+        self._relevance = relevance
         self._scorer = scorer
         self._classifier = classifier
         self._profile = profile
@@ -65,18 +72,23 @@ class JobSeeker:
         return cls(
             sources=sources,
             deduplicator=Deduplicator(),
+            relevance=RelevanceFilter(profile),
             scorer=ProfileScorer(profile),
             classifier=EligibilityClassifier(profile),
             profile=profile,
         )
 
     def run(self, query: SearchQuery) -> SearchResult:
-        """Fan out, dedupe, score, classify, filter, rank. Returns jobs plus honest coverage."""
+        """Fan out, dedupe, filter to what was searched for, score, classify, keep the holdable,
+        rank. Returns jobs plus honest coverage."""
         source_results = self._fetch_all(query)
         collected = [job for result in source_results for job in result.jobs]
         fresh = [job for job in collected if _within_age(job.posted_at, query.max_age_days)]
         deduped = self._dedup.dedupe(fresh)
-        suitable = [scored for job in deduped if (scored := self._evaluate(job)) is not None]
+        # Relevance before scoring: no point scoring an Aluminum Director for an AI search, and it
+        # is what makes the query's terms actually narrow the result.
+        relevant = self._relevance.filter(deduped, query.terms)
+        suitable = [scored for job in relevant if (scored := self._evaluate(job)) is not None]
         ranked = sorted(suitable, key=lambda scored: scored.fit.value, reverse=True)
         return SearchResult(
             query=query, jobs=ranked, coverage=self._coverage(source_results, ranked)

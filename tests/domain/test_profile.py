@@ -117,6 +117,21 @@ class TestEligibilityRulesAreData:
         assert EligibilityRules(include_unverified=False).include_unverified is False
 
 
+class TestSkillsAreValidatedAtTheBoundary:
+    """A bad skill must fail where the profile is built, not deep in scoring as a bare re.error."""
+
+    def test_a_valid_skill_set_is_accepted(self) -> None:
+        assert Profile(skills={r"\bpython\b": 3, "kubernetes": 1}).skills
+
+    def test_an_invalid_regex_is_rejected_naming_the_pattern(self) -> None:
+        with pytest.raises(ValidationError, match=r"\(python"):
+            Profile(skills={"(python": 3})
+
+    def test_a_non_positive_weight_is_rejected(self) -> None:
+        with pytest.raises(ValidationError, match="positive"):
+            Profile(skills={"python": 0})
+
+
 class TestProfileConstruction:
     def test_is_constructible_with_no_arguments(self) -> None:
         """The loader builds a Profile before it validates one, so a bare one must not raise."""

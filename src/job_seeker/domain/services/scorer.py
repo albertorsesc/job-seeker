@@ -43,10 +43,5 @@ class ProfileScorer:
 
 
 def _compile(skills: dict[str, int]) -> list[tuple[re.Pattern[str], int]]:
-    compiled: list[tuple[re.Pattern[str], int]] = []
-    for pattern, weight in skills.items():
-        try:
-            compiled.append((re.compile(pattern, re.IGNORECASE), weight))
-        except re.error as exc:
-            raise ValueError(f"profile skill {pattern!r} is not a valid regex ({exc}).") from exc
-    return compiled
+    # Patterns are already validated by Profile.skills, so they compile cleanly here.
+    return [(re.compile(pattern, re.IGNORECASE), weight) for pattern, weight in skills.items()]

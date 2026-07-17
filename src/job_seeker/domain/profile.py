@@ -7,6 +7,8 @@ come from here, so the engine is fully reusable: swap the profile, keep the code
 
 from __future__ import annotations
 
+import re
+
 from pydantic import BaseModel, Field, field_validator
 
 
@@ -75,6 +77,26 @@ class Profile(BaseModel):
 
     # Weighted signals: regex pattern -> weight. Higher weight = stronger fit.
     skills: dict[str, int] = Field(default_factory=dict)
+
+    @field_validator("skills")
+    @classmethod
+    def _skills_are_usable(cls, value: dict[str, int]) -> dict[str, int]:
+        """Reject a bad skill at the boundary, where the profile is loaded, not deep in scoring.
+
+        A pattern from hand-written YAML can be an invalid regex, and a weight can be zero or
+        negative by typo. Both fail here with the offending pattern named, so a broken profile is
+        caught at load with a clear message rather than as a bare re.error mid-run.
+        """
+        for pattern, weight in value.items():
+            try:
+                re.compile(pattern)
+            except re.error as exc:
+                raise ValueError(f"skill {pattern!r} is not a valid regex ({exc}).") from exc
+            if weight <= 0:
+                raise ValueError(
+                    f"skill {pattern!r} has weight {weight}; weights must be positive."
+                )
+        return value
 
     # A posting title must contain one of these to be a role the seeker wants. Empty means the
     # rule is off. No default: an engineering vocabulary here would silently filter out every
