@@ -104,6 +104,22 @@ class TestBudgetAndFreshness:
         assert len(result.jobs) == 4
         assert result.truncated is True
 
+    def test_a_consumed_feed_is_not_reported_truncated(self) -> None:
+        """Regression: a record with a position but no url is examined but yields no job. When the
+        budget filled exactly on the last usable record and the whole feed was consumed, a recount
+        wrongly flagged truncated=True, which then reported a complete run as incomplete."""
+        jobs = [{"position": "No URL", "company": "c"}, *[_job(id=str(i)) for i in range(4)]]
+        result = _fetch(jobs, max_results=4)
+        assert len(result.jobs) == 4
+        assert result.truncated is False
+
+    def test_a_position_without_a_url_still_counts_as_examined(self) -> None:
+        """scanned means examined, consistent with Himalayas: an unusable posting is still one we
+        looked at, so it counts, even though it produced no job."""
+        result = _fetch([{"position": "No URL", "company": "c"}, _job()])
+        assert result.scanned == 2
+        assert len(result.jobs) == 1
+
     def test_drops_records_older_than_the_age_window(self) -> None:
         result = _fetch(
             [_job(position="fresh", epoch=_epoch(2)), _job(position="stale", epoch=_epoch(90))],

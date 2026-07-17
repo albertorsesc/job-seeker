@@ -45,24 +45,29 @@ class RemoteOkSource:
         records = payload if isinstance(payload, list) else []
         jobs: list[Job] = []
         scanned = 0
-        for record in records:
+        truncated = False
+        for index, record in enumerate(records):
+            if not _is_job_record(record):
+                continue  # the legal boilerplate, or a non-dict: not a posting to examine
+            scanned += 1  # examined, the same meaning as Himalayas' scanned
             job = _normalize(record)
-            if job is None:
-                continue  # boilerplate element, or an unusable record
-            scanned += 1
-            if base.is_stale(job.posted_at, cutoff):
+            if job is None or base.is_stale(job.posted_at, cutoff):
                 continue
             jobs.append(job)
             if len(jobs) >= query.max_results_per_source:
+                # Truncated only if a real posting still remains past the break. Deriving it from
+                # position, not from a recount, is what keeps scanned and truncated in agreement.
+                truncated = any(_is_job_record(r) for r in records[index + 1 :])
                 break
 
-        truncated = len(jobs) >= query.max_results_per_source and scanned < _countable(records)
         return SourceResult(source=self.name, jobs=jobs, scanned=scanned, truncated=truncated)
 
 
-def _countable(records: list[Any]) -> int:
-    """How many records are actual job dicts (excludes the leading boilerplate)."""
-    return sum(1 for record in records if isinstance(record, dict) and record.get("position"))
+def _is_job_record(record: Any) -> bool:
+    """A posting, not the leading legal boilerplate or a stray non-dict. Boilerplate has no
+    `position`, so this is content-based, not positional: it holds if RemoteOK ever drops or
+    reshapes the boilerplate."""
+    return isinstance(record, dict) and bool(str(record.get("position") or "").strip())
 
 
 def _normalize(record: Any) -> Job | None:
@@ -91,6 +96,7 @@ def _normalize(record: Any) -> Job | None:
 
 
 def _salary(record: dict[str, Any]) -> str:
+    # USD is assumed, not read: the /api endpoint exposes salary_min/max but no currency field.
     minimum = _positive(record.get("salary_min"))
     maximum = _positive(record.get("salary_max"))
     if not minimum and not maximum:
