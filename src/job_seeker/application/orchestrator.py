@@ -89,7 +89,9 @@ class JobSeeker:
         # is what makes the query's terms actually narrow the result.
         relevant = self._relevance.filter(deduped, query.terms)
         suitable = [scored for job in relevant if (scored := self._evaluate(job)) is not None]
-        ranked = sorted(suitable, key=lambda scored: scored.fit.value, reverse=True)
+        # Rank on the raw integer sum, not the normalized value: same order within a run (the
+        # total is constant), but exact, so ordering never turns on a rounded float.
+        ranked = sorted(suitable, key=lambda scored: scored.fit.raw, reverse=True)
         return SearchResult(
             query=query, jobs=ranked, coverage=self._coverage(source_results, ranked)
         )

@@ -12,7 +12,18 @@ import io
 
 from job_seeker.domain.models import ScoredJob, SearchResult
 
-_COLUMNS = ("rank", "fit", "eligibility", "reason", "title", "company", "source", "salary", "url")
+_COLUMNS = (
+    "rank",
+    "fit",
+    "matched",
+    "eligibility",
+    "reason",
+    "title",
+    "company",
+    "source",
+    "salary",
+    "url",
+)
 # A cell beginning with one of these is executed as a formula by Excel/Sheets. Board data is
 # untrusted, so a title like "=cmd|..." must be neutralized before it reaches a spreadsheet.
 _FORMULA_TRIGGERS = ("=", "+", "-", "@", "\t", "\r")
@@ -35,6 +46,7 @@ def _row(rank: int, scored: ScoredJob) -> dict[str, object]:
     return {
         "rank": rank,
         "fit": scored.fit.value,
+        "matched": _safe(_matched(scored.fit.matched)),
         "eligibility": scored.eligibility.status.value,
         "reason": _safe(scored.eligibility.reason),
         "title": _safe(job.title),
@@ -43,6 +55,11 @@ def _row(rank: int, scored: ScoredJob) -> dict[str, object]:
         "salary": _safe(job.salary),
         "url": _safe(job.url),
     }
+
+
+def _matched(matched: dict[str, int]) -> str:
+    """The fit breakdown as text: "python +3, rag +2", so the score explains itself in a cell."""
+    return ", ".join(f"{pattern} +{weight}" for pattern, weight in matched.items())
 
 
 def _safe(cell: str) -> str:

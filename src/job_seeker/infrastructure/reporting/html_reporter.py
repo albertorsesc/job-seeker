@@ -27,6 +27,7 @@ h1 { margin-bottom: 0.25rem; }
 .badge { display: inline-block; padding: 0.1rem 0.5rem; border-radius: 0.5rem; font-size: 0.8rem;
          border: 1px solid color-mix(in srgb, currentColor 40%, transparent); }
 .fit { font-variant-numeric: tabular-nums; font-weight: 600; }
+.matched { color: GrayText; font-size: 0.85rem; margin: 0.15rem 0 0; }
 .reason { color: GrayText; font-size: 0.9rem; margin-top: 0.25rem; }
 """.strip()
 
@@ -60,11 +61,24 @@ def _job_html(rank: int, scored: ScoredJob) -> str:
         '<article class="job">\n'
         f"  <h2>{rank}. {_title_html(job.title, job.url)}</h2>\n"
         f'  <p class="meta">{escape(job.company)} &middot; {escape(job.source)}{salary}</p>\n'
-        f'  <p><span class="fit">fit {scored.fit.value}</span> &middot; '
+        f'  <p><span class="fit">fit {scored.fit.value:.0%}</span> &middot; '
         f'<span class="badge">{escape(scored.eligibility.status.value)}</span></p>\n'
+        f"{_matched_html(scored.fit.matched)}"
         f'  <p class="reason">{escape(scored.eligibility.reason)}</p>\n'
         "</article>"
     )
+
+
+def _matched_html(matched: dict[str, int]) -> str:
+    """The fit breakdown ("python +3, rag +2"), so a reader sees why the score is what it is.
+
+    Skill patterns are the seeker's own, but they are escaped anyway: a report escapes every value
+    it renders, and a profile is still text a hostile skill list should never smuggle markup through.
+    """
+    if not matched:
+        return ""
+    parts = ", ".join(f"{escape(pattern)} +{weight}" for pattern, weight in matched.items())
+    return f'  <p class="matched">{parts}</p>\n'
 
 
 def _title_html(title: str, url: str) -> str:

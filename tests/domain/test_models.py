@@ -182,11 +182,27 @@ class TestJobSearchText:
         assert "worldwide" in text
 
 
+class TestFitScore:
+    def test_defaults_to_no_match(self) -> None:
+        score = FitScore()
+        assert score.value == 0.0
+        assert score.raw == 0
+        assert score.matched == {}
+
+    def test_value_must_be_a_normalized_fraction(self) -> None:
+        """value is a 0.0-1.0 fraction, never a raw sum. Rejecting out-of-range guards against a
+        caller passing the old integer sum and silently getting a nonsense score."""
+        with pytest.raises(ValidationError):
+            FitScore(value=10)
+        with pytest.raises(ValidationError):
+            FitScore(value=-0.1)
+
+
 class TestScoredJob:
     def test_is_suitable_when_eligible(self, make_job: Callable[..., Job]) -> None:
         scored = ScoredJob(
             job=make_job(),
-            fit=FitScore(value=10, matched=["python"]),
+            fit=FitScore(value=1.0, raw=10, matched={"python": 10}),
             eligibility=Eligibility(status=EligibilityStatus.GLOBAL),
         )
         assert scored.is_suitable
@@ -196,7 +212,7 @@ class TestScoredJob:
     ) -> None:
         scored = ScoredJob(
             job=make_job(),
-            fit=FitScore(value=99, matched=["python", "rag"]),
+            fit=FitScore(value=1.0, raw=99, matched={"python": 90, "rag": 9}),
             eligibility=Eligibility(status=EligibilityStatus.EXCLUDED_AUTHORIZATION),
         )
         assert not scored.is_suitable

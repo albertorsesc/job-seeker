@@ -37,7 +37,7 @@ def _evil_result() -> SearchResult:
             url="javascript:alert(document.cookie)",
             source="himalayas",
         ),
-        fit=FitScore(value=1),
+        fit=FitScore(value=1.0, raw=1, matched={"python": 1}),
         eligibility=Eligibility(status=EligibilityStatus.GLOBAL, reason="ok"),
     )
     return SearchResult(
@@ -56,7 +56,9 @@ class TestJsonReporter:
 
     def test_carries_fit_and_eligibility_per_job(self, result: SearchResult) -> None:
         top = json.loads(JsonReporter().render(result))["jobs"][0]
-        assert top["fit"]["value"] == 6
+        assert top["fit"]["value"] == 0.83  # normalized 0.0-1.0, not a raw sum
+        assert top["fit"]["raw"] == 6
+        assert top["fit"]["matched"] == {r"\bpython\b": 3, r"\brag\b": 2}
         assert top["eligibility"]["status"] == "global"
         assert top["eligibility"]["reason"]
 
@@ -70,8 +72,15 @@ class TestCsvReporter:
         rows = list(csv.DictReader(io.StringIO(CsvReporter().render(result))))
         assert len(rows) == 2
         assert rows[0]["title"] == "Senior AI Engineer"
-        assert rows[0]["fit"] == "6"
+        assert rows[0]["fit"] == "0.83"  # normalized, comparable across profiles
         assert rows[0]["eligibility"] == "global"
+
+    def test_explains_the_fit_with_a_matched_breakdown(self, result: SearchResult) -> None:
+        """The score explains itself: the cell says which signals earned it, so a reader is not
+        left guessing what "0.83" came from."""
+        rows = list(csv.DictReader(io.StringIO(CsvReporter().render(result))))
+        assert r"\bpython\b +3" in rows[0]["matched"]
+        assert r"\brag\b +2" in rows[0]["matched"]
 
     def test_a_field_with_a_comma_is_quoted_not_split(self, result: SearchResult) -> None:
         rows = list(csv.DictReader(io.StringIO(CsvReporter().render(result))))
@@ -98,6 +107,13 @@ class TestHtmlReporter:
         assert "Senior AI Engineer" in html
         assert "global" in html
         assert "open to applicants anywhere" in html
+
+    def test_shows_fit_as_a_percentage_with_its_breakdown(self, result: SearchResult) -> None:
+        """A normalized fit reads as a percentage a human can judge, and the breakdown says which
+        signals earned it."""
+        html = HtmlReporter().render(result)
+        assert "fit 83%" in html
+        assert r"\bpython\b +3" in html
 
     def test_escapes_html_in_posting_data(self, result: SearchResult) -> None:
         """Posting text is untrusted board data. A title with a tag must not become live markup."""

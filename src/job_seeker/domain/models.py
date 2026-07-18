@@ -125,10 +125,23 @@ class Job(BaseModel):
 
 
 class FitScore(BaseModel):
-    """How well a posting matches the seeker's profile signals."""
+    """How well a posting matches the seeker's profile signals.
 
-    value: int = 0
-    matched: list[str] = Field(default_factory=list)
+    `value` is normalized to 0.0-1.0: the weight this posting matched over the total weight the
+    profile could award. It means the same thing across profiles and across edits to one, so 0.5
+    is always "half your weighted signal matched". A raw sum could not: 10 was a strong fit for a
+    four-skill profile and a weak one for a thirty-skill profile, and a caller thresholding or
+    comparing it had no way to learn the scale, least of all an agent on the far side of the MCP
+    wire that only ever sees the number.
+
+    `raw` keeps that sum, an exact integer the pipeline ranks on so ordering never depends on
+    float rounding. `matched` records which pattern contributed which weight, so a report can
+    explain the number ("python +3, rag +2") instead of only stating it.
+    """
+
+    value: float = Field(default=0.0, ge=0.0, le=1.0)
+    raw: int = Field(default=0, ge=0)
+    matched: dict[str, int] = Field(default_factory=dict)
 
 
 class Eligibility(BaseModel):

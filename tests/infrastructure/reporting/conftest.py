@@ -30,7 +30,7 @@ def result() -> SearchResult:
                 salary="USD 150,000 - 180,000",
                 posted_at=datetime(2026, 7, 10, tzinfo=UTC),
             ),
-            fit=FitScore(value=6, matched=[r"\bpython\b", r"\brag\b"]),
+            fit=FitScore(value=0.83, raw=6, matched={r"\bpython\b": 3, r"\brag\b": 2}),
             eligibility=Eligibility(
                 status=EligibilityStatus.GLOBAL, reason="open to applicants anywhere"
             ),
@@ -42,7 +42,7 @@ def result() -> SearchResult:
                 url="https://himalayas.app/jobs/globex-be",
                 source="himalayas",
             ),
-            fit=FitScore(value=3, matched=[r"\bpython\b"]),
+            fit=FitScore(value=0.5, raw=3, matched={r"\bpython\b": 3}),
             eligibility=Eligibility(
                 status=EligibilityStatus.REGIONAL, reason="open in your region (LATAM)"
             ),
