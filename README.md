@@ -25,22 +25,25 @@ No candidate specifics are hardcoded anywhere in this repo. Who you are, where y
 good at, and where you are legally hireable all live in a Markdown profile that stays **outside** the
 repo. Swap the profile and the same engine serves anyone. A profile that cannot be swapped is a bug.
 
-## Install (development)
+## Install
 
-Requires Python 3.11 or newer and [uv](https://docs.astral.sh/uv/).
+Requires Python 3.11 or newer.
 
-```bash
-git clone https://github.com/albertorsesc/job-seeker
-cd job-seeker
-uv venv && source .venv/bin/activate
-uv pip install -e ".[dev,mcp]"
-```
+> **Not on PyPI:** the name `job-seeker` on PyPI is a different, unrelated project, so
+> `pip install job-seeker` does **not** install this tool. Install from this repository instead.
 
-Run the gate. It fixes what a machine can fix, then runs lint, types, and the tests:
+Install from git (works with `pip` or `uv pip`):
 
 ```bash
-make test
+# CLI only
+pip install "git+https://github.com/albertorsesc/job-seeker.git"
+
+# CLI plus the MCP server (the optional `mcp` extra)
+pip install "job-seeker[mcp] @ git+https://github.com/albertorsesc/job-seeker.git"
 ```
+
+That gives you the `job-seeker` command (and `job-seeker-mcp` with the extra). To hack on the
+project instead, see [CONTRIBUTING.md](CONTRIBUTING.md) for the editable dev setup and `make test`.
 
 ## Usage
 
