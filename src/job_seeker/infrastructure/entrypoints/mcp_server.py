@@ -28,7 +28,8 @@ if TYPE_CHECKING:
 
 _MISSING_SDK = (
     "The MCP server needs the optional 'mcp' extra, which is not installed.\n"
-    'Install it with:  uv pip install "job-seeker[mcp]"'
+    "Reinstall with it:\n"
+    '  pip install "job-seeker[mcp] @ git+https://github.com/albertorsesc/job-seeker.git"'
 )
 
 
