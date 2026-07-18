@@ -5,11 +5,10 @@ scores each against your profile, works out whether you can **actually hold** th
 timezone, work authorization), then filters noise, dedupes, ranks, and reports. It is designed to be
 driven by a local AI agent over MCP, or from the command line.
 
-> **Status: early development.** The domain model, the ports, and both entrypoints exist, and the
-> MCP server runs. The board adapters, scoring, eligibility classifier, pipeline and reporters do
-> not, so **`job-seeker find` does not work yet**: it refuses with a clear message rather than
-> returning an empty list, because an empty result is indistinguishable from a search that found
-> nothing. Nothing is published to PyPI. See [CLAUDE.md](CLAUDE.md) for the architecture.
+> **Status: early but working.** The engine runs end to end: two boards (Himalayas and RemoteOK),
+> the full pipeline (dedupe, score, classify eligibility, filter relevance, rank), a CLI, and an
+> MCP server. It is early, so expect rough edges, more boards to come, and no PyPI release yet. See
+> [CLAUDE.md](CLAUDE.md) for the architecture and [CONTRIBUTING.md](CONTRIBUTING.md) to add a board.
 
 ## Why
 
@@ -43,23 +42,27 @@ Run the gate. It fixes what a machine can fix, then runs lint, types, and the te
 make test
 ```
 
-## What works today
+## Usage
 
 ```bash
-job-seeker --version
-job-seeker sources      # lists the boards and whether each can run. None are registered yet.
-job-seeker find         # refuses: the adapters and scoring are not built. Exits 2.
+export JOB_SEEKER_PROFILE=~/my-profile.md
+
+job-seeker sources                                  # list the boards and whether each can run
+job-seeker find --terms "AI Engineer" --format html --out report.html
+job-seeker find --format json | jq '.jobs[0]'       # top-ranked job as JSON
 ```
 
-The MCP server runs and exposes `list_sources` and `describe_engine` to a local agent:
+Each result carries a fit score and an eligibility verdict with a reason, and the report states
+per-source coverage, so a partial run (a board down, a scan truncated) is never mistaken for a
+thorough one. `find` refuses rather than returning an empty list when it has no way to narrow the
+search, because an empty result is indistinguishable from "nothing matched".
+
+The MCP server exposes `find_jobs`, `list_sources`, and `describe_engine` to a local agent:
 
 ```bash
 claude mcp add job-seeker -- job-seeker-mcp
+# then ask the agent: "find me jobs I can hold"
 ```
-
-It deliberately exposes no `find_jobs` tool while search does not work. A tool that existed and
-returned nothing would read to an agent as "no jobs match you", and the agent would relay that to
-you as fact.
 
 ## Your profile
 
@@ -79,19 +82,19 @@ See [examples/profile.example.md](examples/profile.example.md) for the full sche
 `.gitignore` blocks `profile.md`, `*.profile.md`, `profiles/`, `.env`, and `*.local.md` as a backstop,
 but the rule is simply to keep the file outside the tree.
 
-## Planned sources
+## Sources
 
 Facts below were captured from live runs. Adding a board means writing one `JobSource` adapter and
 registering it, with no change to scoring, filtering, or reporting.
 
-| Source | Access | Notes |
-|---|---|---|
-| Himalayas | JSON API | Structured `locationRestrictions` and `timezoneRestrictions` per posting, which is what makes precise eligibility filtering possible. Page size is capped at 20 and filter params are ignored, so pagination plus client-side filtering. |
-| Remotive | JSON API | Throttles under load and then ignores `search`/`category`. |
-| RemoteOK | JSON API | First array element is legal boilerplate and must be skipped. Filter by tags. |
-| WeWorkRemotely | RSS | Latest ~100. Title is `"Company: Role"`. |
-| WorkingNomads | RSS | Best effort; has returned empty. Must never break a run. |
-| JobSpy (optional) | Scraper | Indeed, LinkedIn, Glassdoor, Google. Heavy and rate-limit prone, so it is an optional extra. |
+| Source | Status | Access | Notes |
+|---|---|---|---|
+| Himalayas | built | JSON API | Structured `locationRestrictions` and `timezoneRestrictions` per posting, which is what makes precise eligibility filtering possible. Page size is capped at 20 and filter params are ignored, so pagination plus client-side filtering. |
+| RemoteOK | built | JSON API | First array element is legal boilerplate and must be skipped. No structured eligibility data, so its jobs use the text-fallback path. |
+| Remotive | planned | JSON API | Throttles under load and then ignores `search`/`category`. |
+| WeWorkRemotely | planned | RSS | Latest ~100. Title is `"Company: Role"`. |
+| WorkingNomads | planned | RSS | Best effort; has returned empty. Must never break a run. |
+| JobSpy | planned | Scraper | Indeed, LinkedIn, Glassdoor, Google. Heavy and rate-limit prone, so an optional extra. |
 
 ZipRecruiter is blocked by Cloudflare for scrapers and is not supported.
 
@@ -104,6 +107,12 @@ This project is a synthesis of ideas proven by others:
 - The Himalayas, Remotive, RemoteOK, and WeWorkRemotely public APIs and feeds.
 
 See [NOTICE](NOTICE) for attribution details.
+
+## Contributing
+
+Adding a job board is one adapter file plus one line in the registry, and the architecture keeps
+you honest with a test. See [CONTRIBUTING.md](CONTRIBUTING.md) for the setup, the layering rule,
+and a step-by-step add-a-source guide, and [CODE_OF_CONDUCT.md](CODE_OF_CONDUCT.md).
 
 ## License
 

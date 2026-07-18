@@ -1,0 +1,69 @@
+name: CI
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+
+permissions:
+  contents: read
+
+# Each check is its own job so a failure names itself (lint vs types vs a specific Python
+# version) and the independent jobs run in parallel. All of them run the check, not the
+# Makefile's auto-fix: CI must reject unformatted or unlinted code, not quietly fix it and pass.
+# `make test` runs the same checks with fix-on for local convenience.
+
+jobs:
+  lint:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v5
+      - name: Install uv
+        uses: astral-sh/setup-uv@11f9893b081a58869d3b5fccaea48c9e9e46f990 # v8.3.2
+        with:
+          python-version: "3.13"
+          enable-cache: true
+      - run: |
+          uv venv
+          uv pip install -e ".[dev]"
+      - name: Lint
+        run: .venv/bin/ruff check .
+      - name: Format
+        run: .venv/bin/ruff format --check .
+
+  types:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v5
+      - name: Install uv
+        uses: astral-sh/setup-uv@11f9893b081a58869d3b5fccaea48c9e9e46f990 # v8.3.2
+        with:
+          # mypy is pinned to 3.11 in pyproject, so it type-checks against 3.11 regardless of
+          # the runner; use the floor to match.
+          python-version: "3.11"
+          enable-cache: true
+      - run: |
+          uv venv --python 3.11
+          uv pip install -e ".[dev,mcp]"
+      - name: Type check
+        run: .venv/bin/mypy
+
+  test:
+    runs-on: ubuntu-latest
+    strategy:
+      fail-fast: false
+      matrix:
+        python-version: ["3.11", "3.12", "3.13"]
+    steps:
+      - uses: actions/checkout@v5
+      - name: Install uv and Python ${{ matrix.python-version }}
+        uses: astral-sh/setup-uv@11f9893b081a58869d3b5fccaea48c9e9e46f990 # v8.3.2
+        with:
+          python-version: ${{ matrix.python-version }}
+          enable-cache: true
+      - run: |
+          uv venv --python ${{ matrix.python-version }}
+          uv pip install -e ".[dev,mcp]"
+      # Tests never touch the network (HTTP is mocked with respx), so the matrix is deterministic.
+      - name: Test
+        run: .venv/bin/pytest
