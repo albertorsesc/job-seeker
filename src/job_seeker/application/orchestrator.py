@@ -19,6 +19,7 @@ from job_seeker.application.ports import JobSource
 from job_seeker.domain.models import (
     EligibilityStatus,
     Job,
+    Relevance,
     ScoredJob,
     SearchQuery,
     SearchResult,
@@ -86,9 +87,15 @@ class JobSeeker:
         fresh = [job for job in collected if _within_age(job.posted_at, query.max_age_days)]
         deduped = self._dedup.dedupe(fresh)
         # Relevance before scoring: no point scoring an Aluminum Director for an AI search, and it
-        # is what makes the query's terms actually narrow the result.
-        relevant = self._relevance.filter(deduped, query.terms)
-        suitable = [scored for job in relevant if (scored := self._evaluate(job)) is not None]
+        # is what makes the query's terms actually narrow the result. Its verdict is carried, not
+        # discarded: a kept job records why it was on-topic, the way every other stage explains
+        # itself.
+        assessed = self._relevance.assess_all(deduped, query.terms)
+        suitable = [
+            scored
+            for job, relevance in assessed
+            if relevance.keep and (scored := self._evaluate(job, relevance)) is not None
+        ]
         # Rank on the raw integer sum, not the normalized value: same order within a run (the
         # total is constant), but exact, so ordering never turns on a rounded float.
         ranked = sorted(suitable, key=lambda scored: scored.fit.raw, reverse=True)
@@ -116,11 +123,15 @@ class JobSeeker:
         except Exception as exc:  # noqa: BLE001 - deliberately catch-all: an adapter may do anything
             return SourceResult(source=source.name, error=f"{type(exc).__name__}: {exc}")
 
-    def _evaluate(self, job: Job) -> ScoredJob | None:
-        """Score and classify one job; return a ScoredJob, or None if the seeker cannot hold it."""
+    def _evaluate(self, job: Job, relevance: Relevance) -> ScoredJob | None:
+        """Score and classify one job; return a ScoredJob, or None if the seeker cannot hold it.
+
+        The relevance verdict is decided upstream (it gates whether we score at all) and passed in
+        so the ScoredJob can carry why the posting was on-topic alongside its fit and eligibility.
+        """
         fit = self._scorer.score(job)
         eligibility = self._classifier.classify(job)
-        scored = ScoredJob(job=job, fit=fit, eligibility=eligibility)
+        scored = ScoredJob(job=job, fit=fit, relevance=relevance, eligibility=eligibility)
         return scored if self._is_suitable(scored) else None
 
     def _is_suitable(self, scored: ScoredJob) -> bool:

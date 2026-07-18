@@ -14,6 +14,11 @@ All notable changes to this project are documented here. The format follows
   `matched` becomes a `pattern -> weight` map. JSON, CSV, and HTML reports now show the score with a
   per-signal breakdown ("python +3, rag +2") so it explains itself. This changes the shape returned
   by the MCP `find_jobs` tool and the JSON report.
+- **Breaking:** the relevance stage now records why it kept or dropped a posting instead of
+  silently returning a boolean. Each result carries a `relevance` object (`keep` plus a `reason`
+  like "title matches 'engineer'"), so "why is this job here?" is answerable, and `Eligibility.reason`
+  is now required rather than defaulting to an empty string. This adds a `relevance` field to every
+  result in the MCP `find_jobs` output and the JSON report, and a `relevance` column to the CSV.
 
 ## [0.1.0] - 2026-07-18
 

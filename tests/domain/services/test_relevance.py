@@ -16,7 +16,7 @@ from job_seeker.domain.services.relevance import RelevanceFilter
 
 
 def _relevant(job: Job, terms: list[str], profile: Profile | None = None) -> bool:
-    return RelevanceFilter(profile or Profile()).is_relevant(job, terms)
+    return RelevanceFilter(profile or Profile()).assess(job, terms).keep
 
 
 class TestWantedSignals:
@@ -63,12 +63,56 @@ class TestExclusions:
         assert not _relevant(make_job(title="Sales Engineer"), ["engineer"], profile)
 
 
-class TestFilterAll:
-    def test_keeps_only_the_relevant_jobs_in_order(self, make_job: Callable[..., Job]) -> None:
+class TestAssessAll:
+    def test_pairs_every_job_with_a_verdict_in_order(self, make_job: Callable[..., Job]) -> None:
+        """Every job comes back, kept or not, so a caller keeps the on-topic ones without losing
+        the reason the others were dropped."""
         jobs = [
             make_job(title="AI Engineer", url="https://a/1"),
             make_job(title="Aluminum Director", url="https://a/2"),
             make_job(title="ML Engineer", url="https://a/3"),
         ]
-        kept = RelevanceFilter(Profile()).filter(jobs, ["engineer"])
-        assert [j.title for j in kept] == ["AI Engineer", "ML Engineer"]
+        assessed = RelevanceFilter(Profile()).assess_all(jobs, ["engineer"])
+        assert [(j.title, r.keep) for j, r in assessed] == [
+            ("AI Engineer", True),
+            ("Aluminum Director", False),
+            ("ML Engineer", True),
+        ]
+
+
+class TestReasonIsRecorded:
+    """The point of the stage recording its verdict: "why is this job here / gone?" is answerable."""
+
+    def test_a_kept_job_names_the_term_it_matched(self, make_job: Callable[..., Job]) -> None:
+        verdict = RelevanceFilter(Profile()).assess(make_job(title="Senior Engineer"), ["engineer"])
+        assert verdict.keep
+        assert "engineer" in verdict.reason
+
+    def test_a_dropped_off_topic_job_says_so(self, make_job: Callable[..., Job]) -> None:
+        verdict = RelevanceFilter(Profile()).assess(
+            make_job(title="Aluminum Director"), ["engineer"]
+        )
+        assert not verdict.keep
+        assert verdict.reason == "title matches no search term"
+
+    def test_an_excluded_job_names_the_excluding_term(self, make_job: Callable[..., Job]) -> None:
+        profile = Profile(role_exclude=["sales"])
+        verdict = RelevanceFilter(profile).assess(make_job(title="Sales Engineer"), ["engineer"])
+        assert not verdict.keep
+        assert "sales" in verdict.reason
+
+    def test_a_false_positive_job_says_it_names_a_human_role(
+        self, make_job: Callable[..., Job]
+    ) -> None:
+        profile = Profile(false_positive_terms=["booking agent"])
+        job = make_job(title="Booking Agent", description="Handle travel bookings.")
+        verdict = RelevanceFilter(profile).assess(job, ["agent"])
+        assert not verdict.keep
+        assert "booking agent" in verdict.reason
+
+    def test_with_no_terms_the_reason_says_nothing_to_narrow_by(
+        self, make_job: Callable[..., Job]
+    ) -> None:
+        verdict = RelevanceFilter(Profile()).assess(make_job(title="Anything"), [])
+        assert verdict.keep
+        assert verdict.reason == "no search terms set"

@@ -20,7 +20,7 @@ from __future__ import annotations
 
 import re
 
-from job_seeker.domain.models import Job
+from job_seeker.domain.models import Job, Relevance
 from job_seeker.domain.profile import Profile
 
 _WORD_SPLIT = re.compile(r"[^\w]+")
@@ -28,37 +28,64 @@ _WORD_CACHE: dict[str, re.Pattern[str]] = {}
 
 
 class RelevanceFilter:
-    """Decides which postings match what the seeker is looking for."""
+    """Decides which postings match what the seeker is looking for, and records why."""
 
     def __init__(self, profile: Profile) -> None:
         self._role_include_words = _words(profile.role_include)
-        self._role_exclude_words = _words(profile.role_exclude)
+        # Sorted once here: `_first_hit` reports the first matching word, and a stable order keeps
+        # the reason deterministic without re-sorting on every job.
+        self._role_exclude_words = sorted(_words(profile.role_exclude))
         self._false_positive_terms = [t.lower() for t in profile.false_positive_terms]
 
-    def is_relevant(self, job: Job, terms: list[str]) -> bool:
-        return self._matches(job, self._role_include_words | _words(terms))
+    def assess(self, job: Job, terms: list[str]) -> Relevance:
+        """Judge one posting against the seeker's terms, returning the verdict and its reason."""
+        return self._assess(job, self._wanted(terms))
 
-    def filter(self, jobs: list[Job], terms: list[str]) -> list[Job]:
-        # Compute the wanted set once for the whole batch, not once per job.
-        wanted = self._role_include_words | _words(terms)
-        return [job for job in jobs if self._matches(job, wanted)]
+    def assess_all(self, jobs: list[Job], terms: list[str]) -> list[tuple[Job, Relevance]]:
+        """Judge a batch, computing the wanted set once, pairing each job with its verdict.
 
-    def _matches(self, job: Job, wanted: set[str]) -> bool:
+        Every job is returned, kept or dropped, so a caller can act on the verdict (keep the
+        on-topic ones) without losing the reason the others were dropped.
+        """
+        wanted = self._wanted(terms)
+        return [(job, self._assess(job, wanted)) for job in jobs]
+
+    def _wanted(self, terms: list[str]) -> list[str]:
+        """The words that mark a job on-topic, sorted once so a matched reason is deterministic."""
+        return sorted(self._role_include_words | _words(terms))
+
+    def _assess(self, job: Job, wanted: list[str]) -> Relevance:
         title = job.title.lower()
-        if any(_word_in(word, title) for word in self._role_exclude_words):
-            return False
+        excluded = _first_hit(self._role_exclude_words, title)
+        if excluded is not None:
+            return Relevance(keep=False, reason=f"excluded role term '{excluded}'")
         if self._false_positive_terms:
             text = job.search_text  # a rebuilt property; read it once
-            if any(term in text for term in self._false_positive_terms):
-                return False
+            false_positive = next((t for t in self._false_positive_terms if t in text), None)
+            if false_positive is not None:
+                return Relevance(keep=False, reason=f"names a human role ('{false_positive}')")
         if not wanted:  # no way to narrow: the seeker gets everything eligible
-            return True
-        return any(_word_in(word, title) for word in wanted)
+            return Relevance(keep=True, reason="no search terms set")
+        matched = _first_hit(wanted, title)
+        if matched is not None:
+            return Relevance(keep=True, reason=f"title matches '{matched}'")
+        return Relevance(keep=False, reason="title matches no search term")
 
 
 def _words(phrases: list[str]) -> set[str]:
     """The distinct lower-cased words across a list of terms or role phrases."""
     return {word for phrase in phrases for word in _WORD_SPLIT.split(phrase.lower()) if word}
+
+
+def _first_hit(words: list[str], text: str) -> str | None:
+    """The first matching word whose whole-word form appears in text, or None.
+
+    Returns the word, not just a bool, so the caller can name it in the reason: "title matches
+    'engineer'" is worth more to a puzzled seeker than "kept". `words` is pre-sorted by the caller,
+    so the reported word is deterministic; a set's own order would make the same job report a
+    different reason from one run to the next. The keep/drop verdict never depends on which is first.
+    """
+    return next((word for word in words if _word_in(word, text)), None)
 
 
 def _word_in(word: str, text: str) -> bool:

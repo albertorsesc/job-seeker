@@ -144,11 +144,28 @@ class FitScore(BaseModel):
     matched: dict[str, int] = Field(default_factory=dict)
 
 
+class Relevance(BaseModel):
+    """Why a posting is, or is not, what the seeker searched for.
+
+    Relevance is the loosest, most heuristic stage, and it used to drop a posting with no record
+    of why, while every other stage explained itself (`FitScore.matched`, `Eligibility.reason`).
+    Recording the verdict and its reason makes "why is this job here?" answerable and keeps the
+    noisiest filter as accountable as the rest. A surviving `ScoredJob` always carries `keep=True`;
+    the reason is what earned it.
+    """
+
+    keep: bool
+    reason: str
+
+
 class Eligibility(BaseModel):
     """Whether, and how, the seeker can hold this role."""
 
     status: EligibilityStatus
-    reason: str = ""
+    # Required, not defaulted: the reason is the product. The classifier sets one on every path,
+    # so a reasonless Eligibility is a bug, and the type should make it impossible rather than
+    # quietly accept an empty string.
+    reason: str
 
     @computed_field  # type: ignore[prop-decorator]
     @property
@@ -165,10 +182,16 @@ class Eligibility(BaseModel):
 
 
 class ScoredJob(BaseModel):
-    """A posting decorated with fit and eligibility. The pipeline's output unit."""
+    """A posting decorated with why it survived each stage. The pipeline's output unit.
+
+    It carries the reasoning of all three judgment stages: `fit` (how well it matches, and which
+    signals earned that), `relevance` (why it is on-topic), and `eligibility` (whether and why the
+    seeker can hold it). A consumer never has to guess why a posting is in the result.
+    """
 
     job: Job
     fit: FitScore
+    relevance: Relevance
     eligibility: Eligibility
 
     @computed_field  # type: ignore[prop-decorator]

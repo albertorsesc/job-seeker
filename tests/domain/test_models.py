@@ -15,6 +15,7 @@ from job_seeker.domain.models import (
     EligibilityStatus,
     FitScore,
     Job,
+    Relevance,
     ScoredJob,
 )
 
@@ -122,7 +123,7 @@ class TestEligibleStatuses:
             EligibilityStatus.GLOBAL,
             EligibilityStatus.REMOTE_UNVERIFIED,
         ):
-            assert Eligibility(status=status).is_eligible
+            assert Eligibility(status=status, reason="test").is_eligible
 
     def test_excluded_statuses_are_not_eligible(self) -> None:
         for status in (
@@ -130,7 +131,7 @@ class TestEligibleStatuses:
             EligibilityStatus.EXCLUDED_TIMEZONE,
             EligibilityStatus.EXCLUDED_AUTHORIZATION,
         ):
-            assert not Eligibility(status=status).is_eligible
+            assert not Eligibility(status=status, reason="test").is_eligible
 
     def test_every_status_is_deliberately_classified(self) -> None:
         """Adding a status must be a decision, not an accidental exclusion."""
@@ -203,7 +204,8 @@ class TestScoredJob:
         scored = ScoredJob(
             job=make_job(),
             fit=FitScore(value=1.0, raw=10, matched={"python": 10}),
-            eligibility=Eligibility(status=EligibilityStatus.GLOBAL),
+            relevance=Relevance(keep=True, reason="title matches 'python'"),
+            eligibility=Eligibility(status=EligibilityStatus.GLOBAL, reason="open worldwide"),
         )
         assert scored.is_suitable
 
@@ -213,6 +215,9 @@ class TestScoredJob:
         scored = ScoredJob(
             job=make_job(),
             fit=FitScore(value=1.0, raw=99, matched={"python": 90, "rag": 9}),
-            eligibility=Eligibility(status=EligibilityStatus.EXCLUDED_AUTHORIZATION),
+            relevance=Relevance(keep=True, reason="title matches 'python'"),
+            eligibility=Eligibility(
+                status=EligibilityStatus.EXCLUDED_AUTHORIZATION, reason="US-only"
+            ),
         )
         assert not scored.is_suitable
