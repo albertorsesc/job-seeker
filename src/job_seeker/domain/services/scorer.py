@@ -27,19 +27,25 @@ class ProfileScorer:
 
     def __init__(self, profile: Profile) -> None:
         self._signals = _compile(profile.skills)
+        # The most any posting could earn from this profile: the yardstick that turns a raw sum
+        # into a 0.0-1.0 fit. Fixed for the run, like the signals themselves.
+        self._total_weight = sum(weight for _, weight in self._signals)
 
     def score(self, job: Job) -> FitScore:
-        """Sum the weights of every signal whose pattern appears in the posting text.
+        """Sum the weights of every signal whose pattern appears, normalized against the total.
 
         A signal counts once no matter how often it appears: presence is what matters, not
         frequency, so a posting that says "python" ten times is not ten times a better fit.
         """
         text = job.search_text[:_MAX_TEXT]
-        matched = [(pattern, weight) for pattern, weight in self._signals if pattern.search(text)]
-        return FitScore(
-            value=sum(weight for _, weight in matched),
-            matched=[pattern.pattern for pattern, _ in matched],
-        )
+        matched = {
+            pattern.pattern: weight for pattern, weight in self._signals if pattern.search(text)
+        }
+        raw = sum(matched.values())
+        # Guard the division rather than let a profile with no usable skills (total 0) raise. Such
+        # a profile can award no fit, so every posting scores 0.0, which is the honest answer.
+        value = round(raw / self._total_weight, 4) if self._total_weight else 0.0
+        return FitScore(value=value, raw=raw, matched=matched)
 
 
 def _compile(skills: dict[str, int]) -> list[tuple[re.Pattern[str], int]]:

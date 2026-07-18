@@ -6,6 +6,15 @@ All notable changes to this project are documented here. The format follows
 
 ## [Unreleased]
 
+### Changed
+
+- **Breaking:** the fit score is now normalized. `FitScore.value` is a `0.0-1.0` fraction (matched
+  weight over the profile's total available weight) instead of a raw integer sum, so it means the
+  same thing across profiles and across edits to one. The raw sum moves to `FitScore.raw`, and
+  `matched` becomes a `pattern -> weight` map. JSON, CSV, and HTML reports now show the score with a
+  per-signal breakdown ("python +3, rag +2") so it explains itself. This changes the shape returned
+  by the MCP `find_jobs` tool and the JSON report.
+
 ## [0.1.0] - 2026-07-18
 
 First working release. Pre-1.0, so the API and profile schema may still change in a minor
