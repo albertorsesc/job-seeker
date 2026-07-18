@@ -1,0 +1,15 @@
+version: 2
+updates:
+  # Keep the pinned action SHAs in the workflows current (setup-uv, checkout). Pinned actions do
+  # not update themselves, so a stale pin can carry a fixed vulnerability. This is the update that
+  # needs a config file; GitHub's Dependabot security alerts cover the Python dependencies
+  # automatically on public repositories.
+  #
+  # To also get proactive Python version-update PRs, commit a uv.lock and add a second entry with
+  # `package-ecosystem: "uv"` (the uv ecosystem reads the lockfile).
+  - package-ecosystem: "github-actions"
+    directory: "/"
+    schedule:
+      interval: "weekly"
+    commit-message:
+      prefix: "ci"
