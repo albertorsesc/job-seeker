@@ -6,6 +6,11 @@ All notable changes to this project are documented here. The format follows
 
 ## [Unreleased]
 
+## [0.1.0] - 2026-07-18
+
+First working release. Pre-1.0, so the API and profile schema may still change in a minor
+release.
+
 ### Added
 
 - Profile-driven domain model: a Markdown profile with YAML front matter drives scoring,
@@ -23,4 +28,5 @@ All notable changes to this project are documented here. The format follows
 - `job-seeker` CLI (`find`, `sources`) with JSON, CSV, and self-contained HTML reports.
 - MCP server exposing `find_jobs`, `list_sources`, and `describe_engine` to a local agent.
 
-[Unreleased]: https://github.com/albertorsesc/job-seeker/commits/main
+[Unreleased]: https://github.com/albertorsesc/job-seeker/compare/v0.1.0...HEAD
+[0.1.0]: https://github.com/albertorsesc/job-seeker/releases/tag/v0.1.0
