@@ -93,6 +93,26 @@ Two adapters show the two shapes a board can take:
 Normalization must be defended against untrusted data: a record that is not a dict, a non-numeric
 salary, a missing field. Return `None` for an unusable record rather than raising.
 
+### Report coverage honestly (`scanned` and `truncated`)
+
+`SourceResult` carries two coverage fields, and they are part of the answer, not diagnostics. A run
+that saw 200 of a board's 100,000 postings and a run that saw all of them are different facts, and
+`SearchResult.is_complete` is only as truthful as each adapter's report.
+
+- `scanned`: how many postings this adapter actually examined.
+- `truncated`: `True` when the adapter did **not** see the board's whole corpus (it stopped early
+  on a scan cap, or the board only ever exposes a slice of itself). `False` only when the adapter
+  can honestly say it saw everything the board has.
+
+**Window-only sources (RSS feeds, "latest N" endpoints).** Some boards structurally expose only the
+newest slice of a much larger, growing corpus (for example an RSS feed of the latest ~100 of
+thousands of postings), with no way to page back further. Such a source can never see the whole
+board, so the honest default is **`truncated=True` whenever it returned a full window**: the run
+saw a window, not the board. Report `truncated=False` only if the feed genuinely lists the board's
+entire corpus (a small board whose feed really is all of it). Decide this once, here, so every
+window-only adapter reports it the same way rather than each guessing: a latest-N feed that came
+back full is truncated, full stop.
+
 ### 2. Register it
 
 Add one line to `src/job_seeker/infrastructure/sources/defaults.py`:

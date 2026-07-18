@@ -28,6 +28,7 @@ h1 { margin-bottom: 0.25rem; }
          border: 1px solid color-mix(in srgb, currentColor 40%, transparent); }
 .fit { font-variant-numeric: tabular-nums; font-weight: 600; }
 .matched { color: GrayText; font-size: 0.85rem; margin: 0.15rem 0 0; }
+.relevance { color: GrayText; font-size: 0.85rem; margin: 0.15rem 0 0; }
 .reason { color: GrayText; font-size: 0.9rem; margin-top: 0.25rem; }
 """.strip()
 
@@ -64,6 +65,7 @@ def _job_html(rank: int, scored: ScoredJob) -> str:
         f'  <p><span class="fit">fit {scored.fit.value:.0%}</span> &middot; '
         f'<span class="badge">{escape(scored.eligibility.status.value)}</span></p>\n'
         f"{_matched_html(scored.fit.matched)}"
+        f'  <p class="relevance">relevant: {escape(scored.relevance.reason)}</p>\n'
         f'  <p class="reason">{escape(scored.eligibility.reason)}</p>\n'
         "</article>"
     )

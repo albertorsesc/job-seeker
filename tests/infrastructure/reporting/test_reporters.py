@@ -15,6 +15,7 @@ from job_seeker.domain.models import (
     EligibilityStatus,
     FitScore,
     Job,
+    Relevance,
     ScoredJob,
     SearchQuery,
     SearchResult,
@@ -38,6 +39,7 @@ def _evil_result() -> SearchResult:
             source="himalayas",
         ),
         fit=FitScore(value=1.0, raw=1, matched={"python": 1}),
+        relevance=Relevance(keep=True, reason="title matches 'engineer'"),
         eligibility=Eligibility(status=EligibilityStatus.GLOBAL, reason="ok"),
     )
     return SearchResult(
@@ -59,6 +61,8 @@ class TestJsonReporter:
         assert top["fit"]["value"] == 0.83  # normalized 0.0-1.0, not a raw sum
         assert top["fit"]["raw"] == 6
         assert top["fit"]["matched"] == {r"\bpython\b": 3, r"\brag\b": 2}
+        assert top["relevance"]["keep"] is True
+        assert top["relevance"]["reason"] == "title matches 'engineer'"
         assert top["eligibility"]["status"] == "global"
         assert top["eligibility"]["reason"]
 
@@ -81,6 +85,7 @@ class TestCsvReporter:
         rows = list(csv.DictReader(io.StringIO(CsvReporter().render(result))))
         assert r"\bpython\b +3" in rows[0]["matched"]
         assert r"\brag\b +2" in rows[0]["matched"]
+        assert rows[0]["relevance"] == "title matches 'engineer'"
 
     def test_a_field_with_a_comma_is_quoted_not_split(self, result: SearchResult) -> None:
         rows = list(csv.DictReader(io.StringIO(CsvReporter().render(result))))
@@ -114,6 +119,12 @@ class TestHtmlReporter:
         html = HtmlReporter().render(result)
         assert "fit 83%" in html
         assert r"\bpython\b +3" in html
+
+    def test_shows_why_each_job_is_on_topic(self, result: SearchResult) -> None:
+        """The relevance stage explains itself in the human report too, not only in JSON/CSV."""
+        html = HtmlReporter().render(result)
+        assert "relevant: title matches" in html  # the apostrophe in the term is HTML-escaped
+        assert "engineer" in html
 
     def test_escapes_html_in_posting_data(self, result: SearchResult) -> None:
         """Posting text is untrusted board data. A title with a tag must not become live markup."""

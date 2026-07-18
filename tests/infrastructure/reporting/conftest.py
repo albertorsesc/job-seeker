@@ -11,6 +11,7 @@ from job_seeker.domain.models import (
     EligibilityStatus,
     FitScore,
     Job,
+    Relevance,
     ScoredJob,
     SearchQuery,
     SearchResult,
@@ -31,6 +32,7 @@ def result() -> SearchResult:
                 posted_at=datetime(2026, 7, 10, tzinfo=UTC),
             ),
             fit=FitScore(value=0.83, raw=6, matched={r"\bpython\b": 3, r"\brag\b": 2}),
+            relevance=Relevance(keep=True, reason="title matches 'engineer'"),
             eligibility=Eligibility(
                 status=EligibilityStatus.GLOBAL, reason="open to applicants anywhere"
             ),
@@ -43,6 +45,7 @@ def result() -> SearchResult:
                 source="himalayas",
             ),
             fit=FitScore(value=0.5, raw=3, matched={r"\bpython\b": 3}),
+            relevance=Relevance(keep=True, reason="title matches 'engineer'"),
             eligibility=Eligibility(
                 status=EligibilityStatus.REGIONAL, reason="open in your region (LATAM)"
             ),
