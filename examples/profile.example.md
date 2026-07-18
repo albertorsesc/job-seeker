@@ -18,16 +18,16 @@ eligibility:
   # Every rule below is data you supply. An empty rule is simply off: the engine never
   # invents a constraint you did not state, and empty never means "match everything".
 
-  # Region names (lower-cased) that count as "I can work here". A posting whose stated
-  # location matches any of these counts as eligible. Do NOT put "remote" here: it is a work
-  # mode, not a region, and it appears in nearly every posting, so it would pass everything.
+  # Region names (lower-cased) that count as "I can legally work here". A posting restricted to a
+  # country inside a region you list counts as eligible: list "latam" and a Brazil-only job
+  # matches. So a region is an authorization claim, not just geography. Only list a region you can
+  # work throughout: "americas" and "north america" include the United States and Canada, and
+  # "emea" includes the Middle East and Africa, so listing them surfaces jobs there. If you cannot
+  # work in the US, list "latam" or specific countries, not "americas".
+  # Do NOT put "remote" here: it is a work mode, not a region, and would pass everything.
   eligible_regions:
     - portugal
     - europe
-    - emea
-    - worldwide
-    - anywhere
-    - global
   # Phrases that mean a posting wants a work authorization you do not hold. Matched against
   # the posting text. This replaces the old US-only switch: put your own country's terms here.
   disqualifying_authorization_terms:

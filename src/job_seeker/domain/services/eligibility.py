@@ -19,9 +19,11 @@ eligibility, and it appears in nearly every posting.
 from __future__ import annotations
 
 import re
+from collections.abc import Iterable
 
 from job_seeker.domain.models import Eligibility, EligibilityStatus, Job
 from job_seeker.domain.profile import Profile
+from job_seeker.domain.regions import expand_place
 
 # Phrases in posting text that mean "hireable anywhere". Multi-word on purpose: a bare "global"
 # or "globally" is marketing filler ("global SaaS company", "globally distributed") and would
@@ -51,9 +53,15 @@ class EligibilityClassifier:
         self._home = profile.location.country.strip().lower()
         # The placeholder default is not a real country, so it must not match anything.
         self._home_is_real = bool(self._home) and self._home != "worldwide"
-        # Normalized place strings for exact structured matching (see _structured_location_verdict).
         self._home_place = _normalize_place(self._home)
-        self._region_places = {_normalize_place(r) for r in self._rules.eligible_regions}
+        # Every place the profile accepts: each eligible region plus, if it is a known region, its
+        # member countries. So "latam" accepts a "Brazil" restriction, and the text path recognizes
+        # a member country mentioned in prose.
+        self._accepted_places = {
+            place
+            for region in self._rules.eligible_regions
+            for place in expand_place(_normalize_place(region))
+        }
 
     def classify(self, job: Job) -> Eligibility:
         timezone = self._timezone_verdict(job)
@@ -84,11 +92,11 @@ class EligibilityClassifier:
     def _structured_location_verdict(self, job: Job) -> Eligibility | None:
         """Decide from the board's stated location restrictions, or None to defer to the text.
 
-        Restrictions are place strings (country names), so they are matched by EXACT normalized
-        equality, not substring: "New Mexico" is a US state, not the country "Mexico", and
-        substring matching told a Mexico-based seeker he could hold a US-only job. The known cost
-        is that a broad profile region ("latam") will not match a specific country restriction
-        ("Brazil") without a country-to-region map; that under-includes, which is the safe error.
+        Restrictions are place strings matched by normalized equality, not substring, so "New
+        Mexico" (a US state) is not the country "Mexico". A restriction is accepted when its
+        expanded places (a country, or a region plus its member countries) intersect the profile's
+        accepted places, so a "Brazil" restriction matches a "latam" profile and a "Europe"
+        restriction matches a "Portugal" profile, in both directions.
         """
         restrictions = job.hints.location_restrictions
         if restrictions is None:  # the board said nothing about location
@@ -105,7 +113,8 @@ class EligibilityClassifier:
                 status=EligibilityStatus.HOME_BASED,
                 reason=f"open in your country ({', '.join(restrictions)})",
             )
-        if self._region_places & set(stated):
+        stated_places = {place for r in stated for place in expand_place(r)}
+        if self._accepted_places & stated_places:
             return Eligibility(
                 status=EligibilityStatus.REGIONAL,
                 reason=f"open in your region ({', '.join(restrictions)})",
@@ -127,7 +136,9 @@ class EligibilityClassifier:
                 status=EligibilityStatus.EXCLUDED_AUTHORIZATION,
                 reason="demands work authorization you do not hold",
             )
-        region_mentioned = _any_mention(self._rules.eligible_regions, text)
+        # A member country of an eligible region counts as a region mention (e.g. "Argentina"
+        # mentioned for a "latam" profile), which the expanded accepted-places set carries.
+        region_mentioned = _any_mention(self._accepted_places, text)
         if _any_mention(self._rules.location_lock_terms, text) and not region_mentioned:
             return Eligibility(
                 status=EligibilityStatus.EXCLUDED_LOCATION,
@@ -163,5 +174,5 @@ def _mentions(term: str, text: str) -> bool:
     return pattern.search(text) is not None
 
 
-def _any_mention(terms: list[str] | tuple[str, ...], text: str) -> bool:
+def _any_mention(terms: Iterable[str], text: str) -> bool:
     return any(_mentions(term, text) for term in terms)

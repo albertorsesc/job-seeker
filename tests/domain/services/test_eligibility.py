@@ -180,6 +180,53 @@ class TestMatchingIsWordAccurateNotSubstring:
         assert EligibilityClassifier(profile).classify(job).status == S.GLOBAL
 
 
+class TestRegionMapping:
+    """A profile's broad region must accept a board's specific-country restriction, and back."""
+
+    def test_a_latam_seeker_is_regional_for_a_brazil_restricted_job(
+        self, make_job: Callable[..., Job]
+    ) -> None:
+        """The card-080 fix: "Brazil" is in LATAM, so a LATAM seeker can hold it. Exact matching
+        wrongly excluded this."""
+        profile = Profile(
+            location=LocationProfile(country="Mexico", timezone_utc_offset=-6.0),
+            eligibility=EligibilityRules(eligible_regions=["latam"]),
+        )
+        job = make_job(hints=EligibilityHints(location_restrictions=("Brazil",)))
+        assert EligibilityClassifier(profile).classify(job).status == S.REGIONAL
+
+    def test_a_portugal_seeker_is_regional_for_a_europe_restricted_job(
+        self, make_job: Callable[..., Job]
+    ) -> None:
+        profile = Profile(
+            location=LocationProfile(country="Portugal"),
+            eligibility=EligibilityRules(eligible_regions=["portugal"]),
+        )
+        job = make_job(hints=EligibilityHints(location_restrictions=("Europe",)))
+        assert EligibilityClassifier(profile).classify(job).status == S.REGIONAL
+
+    def test_a_latam_seeker_is_still_excluded_from_a_us_only_job(
+        self, make_job: Callable[..., Job]
+    ) -> None:
+        """The map must not over-include: the US is not LATAM."""
+        profile = Profile(
+            location=LocationProfile(country="Mexico"),
+            eligibility=EligibilityRules(eligible_regions=["latam"]),
+        )
+        job = make_job(hints=EligibilityHints(location_restrictions=("United States",)))
+        assert EligibilityClassifier(profile).classify(job).status == S.EXCLUDED_LOCATION
+
+    def test_a_region_member_country_is_recognized_in_the_text_path_too(
+        self, make_job: Callable[..., Job]
+    ) -> None:
+        profile = Profile(
+            location=LocationProfile(country="Mexico"),
+            eligibility=EligibilityRules(eligible_regions=["latam"]),
+        )
+        job = make_job(description="Open to candidates in Argentina.", hints=EligibilityHints())
+        assert EligibilityClassifier(profile).classify(job).status == S.REGIONAL
+
+
 class TestReasonIsPopulated:
     def test_every_verdict_carries_a_reason(self, make_job: Callable[..., Job]) -> None:
         """The reason is the product: "why can't I hold this?" must always have an answer."""
