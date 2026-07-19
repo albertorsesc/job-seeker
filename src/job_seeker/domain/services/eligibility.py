@@ -138,7 +138,7 @@ class EligibilityClassifier:
             )
         # A member country of an eligible region counts as a region mention (e.g. "Argentina"
         # mentioned for a "latam" profile), which the expanded accepted-places set carries.
-        region_mentioned = _any_mention(self._accepted_places, text)
+        region_mentioned = _any_mention_place(self._accepted_places, text)
         if _any_mention(self._rules.location_lock_terms, text) and not region_mentioned:
             return Eligibility(
                 status=EligibilityStatus.EXCLUDED_LOCATION,
@@ -148,7 +148,7 @@ class EligibilityClassifier:
             return Eligibility(
                 status=EligibilityStatus.GLOBAL, reason="states it hires from anywhere"
             )
-        if self._home_is_real and _mentions(self._home, text):
+        if self._home_is_real and _mentions_place(self._home, text):
             return Eligibility(status=EligibilityStatus.HOME_BASED, reason="mentions your country")
         if region_mentioned:
             return Eligibility(status=EligibilityStatus.REGIONAL, reason="mentions your region")
@@ -176,3 +176,43 @@ def _mentions(term: str, text: str) -> bool:
 
 def _any_mention(terms: Iterable[str], text: str) -> bool:
     return any(_mentions(term, text) for term in terms)
+
+
+# Qualifiers that make a place a different place: "New Mexico" is a US state, not "Mexico"; "North
+# Korea" is not "Korea". The text path guards against them; the structured path matches exactly.
+_PLACE_QUALIFIERS = (
+    "new",
+    "north",
+    "south",
+    "east",
+    "west",
+    "northern",
+    "southern",
+    "eastern",
+    "western",
+    "central",
+)
+# Reject a place preceded by a qualifier. Each lookbehind is fixed-width (a `\b` is zero-width) as
+# Python's re requires, and the leading `\b` stops "renew" reading as "new".
+_NOT_QUALIFIED = "".join(rf"(?<!\b{q} )" for q in _PLACE_QUALIFIERS)
+_PLACE_CACHE: dict[str, re.Pattern[str]] = {}
+
+
+def _mentions_place(place: str, text: str) -> bool:
+    """Whole-word place match that ignores a place embedded in a larger one.
+
+    "mexico" matches "hiring in mexico" but not "new mexico" (a US state). It errs toward
+    under-matching on purpose: a missed mention only downgrades to REMOTE_UNVERIFIED (still shown),
+    while reading "New Mexico" as home-based is a false "you can hold this". Costs of that choice:
+    "a new Mexico office" downgrades too (string-identical to the state), a short name inside its
+    full form ("Korea" in "South Korea") is missed, and same-word places ("Georgia" country vs
+    state) are indistinguishable. This is why the text path is a fallback, not the authority.
+    """
+    pattern = _PLACE_CACHE.get(place)
+    if pattern is None:
+        pattern = _PLACE_CACHE[place] = re.compile(_NOT_QUALIFIED + rf"\b{re.escape(place)}\b")
+    return pattern.search(text) is not None
+
+
+def _any_mention_place(places: Iterable[str], text: str) -> bool:
+    return any(_mentions_place(p, text) for p in places)
