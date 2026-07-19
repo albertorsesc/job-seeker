@@ -49,3 +49,7 @@ htmlcov/
 .idea/
 *.swp
 .DS_Store
+
+# --- Local, uncommitted ----------------------------------------------------
+storage/
+.claude/settings.local.json
