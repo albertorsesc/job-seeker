@@ -20,6 +20,12 @@ All notable changes to this project are documented here. The format follows
   is now required rather than defaulting to an empty string. This adds a `relevance` field to every
   result in the MCP `find_jobs` output and the JSON report, and a `relevance` column to the CSV.
 
+### Fixed
+
+- Eligibility text path no longer reads a place embedded in a larger one as the seeker's home or
+  region: a posting located in "New Mexico" (a US state) is no longer classified home-based for a
+  Mexico-based seeker. The structured path already handled this; the text fallback now does too.
+
 ## [0.1.0] - 2026-07-18
 
 First working release. Pre-1.0, so the API and profile schema may still change in a minor

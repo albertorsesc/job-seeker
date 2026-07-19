@@ -140,6 +140,60 @@ class TestMatchingIsWordAccurateNotSubstring:
         job = make_job(hints=EligibilityHints(location_restrictions=("New Mexico",)))
         assert _classify(job) == S.EXCLUDED_LOCATION
 
+    def test_a_us_state_containing_the_home_country_name_is_not_home_based_via_text(
+        self, make_job: Callable[..., Job]
+    ) -> None:
+        """The text path must guard the same confusion the structured path does. "New Mexico" is a
+        US state, not the country Mexico; reading it as home-based is a false "you can hold this"
+        for a US-only role, the exact failure the product exists to prevent."""
+        profile = Profile(location=LocationProfile(country="Mexico"))
+        job = make_job(
+            title="Remote Engineer",
+            description="This fully-remote role is based in New Mexico, USA.",
+            hints=EligibilityHints(),
+        )
+        assert EligibilityClassifier(profile).classify(job).status != S.HOME_BASED
+
+    def test_a_genuine_home_country_mention_in_text_is_still_home_based(
+        self, make_job: Callable[..., Job]
+    ) -> None:
+        """The guard must not suppress a real mention: "hiring in Mexico" is home-based."""
+        profile = Profile(location=LocationProfile(country="Mexico"))
+        job = make_job(
+            title="Remote Engineer",
+            description="We are hiring in Mexico for this remote role.",
+            hints=EligibilityHints(),
+        )
+        assert EligibilityClassifier(profile).classify(job).status == S.HOME_BASED
+
+    def test_a_qualifier_word_across_a_sentence_boundary_does_not_suppress(
+        self, make_job: Callable[..., Job]
+    ) -> None:
+        """The guard is about "New Mexico", not any "west" earlier in the text. Punctuation between
+        a qualifier and the place means they are not one place."""
+        profile = Profile(location=LocationProfile(country="Mexico"))
+        job = make_job(
+            title="Remote Engineer",
+            description="Our team is heading west. Mexico is where this role sits.",
+            hints=EligibilityHints(),
+        )
+        assert EligibilityClassifier(profile).classify(job).status == S.HOME_BASED
+
+    def test_a_qualified_region_name_in_text_is_not_regional(
+        self, make_job: Callable[..., Job]
+    ) -> None:
+        """ "North Korea" is not the accepted region member "Korea"."""
+        profile = Profile(
+            location=LocationProfile(country="Nowhere"),
+            eligibility=EligibilityRules(eligible_regions=["korea"]),
+        )
+        job = make_job(
+            title="Remote Engineer",
+            description="Our team is based in North Korea.",
+            hints=EligibilityHints(),
+        )
+        assert EligibilityClassifier(profile).classify(job).status != S.REGIONAL
+
     def test_a_short_region_token_does_not_match_inside_a_word(
         self, make_job: Callable[..., Job]
     ) -> None:
