@@ -6,25 +6,72 @@ All notable changes to this project are documented here. The format follows
 
 ## [Unreleased]
 
+Pre-1.0 and not yet depended on, so these breaks are taken now rather than carried.
+
 ### Changed
 
-- **Breaking:** the fit score is now normalized. `FitScore.value` is a `0.0-1.0` fraction (matched
+- **Breaking:** the fit score is normalized. `FitScore.value` is a `0.0-1.0` fraction (matched
   weight over the profile's total available weight) instead of a raw integer sum, so it means the
-  same thing across profiles and across edits to one. The raw sum moves to `FitScore.raw`, and
-  `matched` becomes a `pattern -> weight` map. JSON, CSV, and HTML reports now show the score with a
-  per-signal breakdown ("python +3, rag +2") so it explains itself. This changes the shape returned
-  by the MCP `find_jobs` tool and the JSON report.
-- **Breaking:** the relevance stage now records why it kept or dropped a posting instead of
-  silently returning a boolean. Each result carries a `relevance` object (`keep` plus a `reason`
-  like "title matches 'engineer'"), so "why is this job here?" is answerable, and `Eligibility.reason`
-  is now required rather than defaulting to an empty string. This adds a `relevance` field to every
-  result in the MCP `find_jobs` output and the JSON report, and a `relevance` column to the CSV.
+  same thing across profiles. The raw sum moves to `FitScore.raw`, and `matched` becomes a
+  `pattern -> weight` map, so reports can explain a score ("python +3, rag +2") rather than state it.
+- **Breaking:** the relevance stage records why it kept or dropped a posting instead of returning a
+  bare boolean. Every result carries a `relevance` object, and `Eligibility.reason` is now required.
+- **Breaking:** pay is structured, comparable, and carries its provenance. `Job.salary` is a
+  `SalaryRange` or `null`, replacing a display string each adapter built for itself:
+
+  - `minimum`, `maximum`, `currency` are the board's own figures; `note` is prose for boards that
+    publish "Competitive, DOE" instead of a number.
+  - `period` (`hour`..`year`, or `null`) says what the figures are quoted per, with derived
+    `annual_minimum`/`annual_maximum` for comparison. Boards mix hourly and annual pay freely, so
+    ranking on the bare number put an $85/hour role below a $60,000 one. The annual figures assume
+    full time and are `null` rather than guessed when the period is unknown.
+  - `currency_source` distinguishes a currency the board published from one an adapter asserted;
+    they were previously indistinguishable on the wire.
+
+  Each adapter declares its board's currency, that currency's origin, and its period, and
+  `base.salary_from_bounds` requires all three, so a new board cannot skip the question. Formatting
+  moved from the adapters to the reporters: the CSV gains sortable `salary_min`, `salary_max`,
+  `currency`, `currency_source`, `salary_period`, `annual_min`, `annual_max` and `salary_note`
+  columns in place of one `salary` string.
+- **Breaking:** `--limit` split into `--scan-depth` and `--max-results` (MCP: `scan_depth`,
+  `max_results`). One parameter meant both "how deep to read each board" and "how many results to
+  return", and it silently meant the first: lowering it shrank the candidate pool *before* ranking,
+  so asking for a shorter list returned worse jobs rather than fewer. `--max-results` applies after
+  ranking. `coverage.kept` still counts what each board matched, so `sum(kept)` exceeding the
+  returned count is how a caller sees the cap bite.
+- **Breaking:** `SearchResult.is_complete` split into `all_sources_ran` and `fully_scanned`. One
+  boolean covered both a board failing and a scan being capped, and since the default depth always
+  caps a ~98,000-posting feed it was false on every run, which is the same as being absent.
+- **Breaking:** a board whose adapter cannot be constructed is reported as a failed source in
+  `coverage` rather than ending the run. `job-seeker find` used to exit with a traceback while
+  `job-seeker sources` reported the same board cleanly.
+- The MCP `find_jobs` tool publishes an output schema. It returned `dict[str, Any]`, so `tools/list`
+  described nothing and an agent had to infer the payload shape from an example.
+
+### Added
+
+- `job-seeker find` prints a notice to stderr when a run was not exhaustive: a warning naming the
+  boards that failed, or a quieter line when a scan was merely capped. JSON and HTML carry coverage
+  in the report, but CSV is a flat table of jobs with nowhere to put it, so a failed board there was
+  a header row and silence.
+- `describe_engine` checks whether a profile is loadable instead of reporting `can_search: true`
+  unconditionally, and returns the reason when it is not.
 
 ### Fixed
 
+- Cross-board dedup no longer discards data. The freshest posting is still the representative, but
+  a field it lacks is filled from its siblings, so a copy posted an hour later with no salary no
+  longer takes a published salary with it.
 - Eligibility text path no longer reads a place embedded in a larger one as the seeker's home or
-  region: a posting located in "New Mexico" (a US state) is no longer classified home-based for a
-  Mexico-based seeker. The structured path already handled this; the text fallback now does too.
+  region: a posting in "New Mexico" is no longer home-based for a Mexico-based seeker.
+- A search term whose punctuation carries the meaning is matched whole. `"C++"` was split to `"c"`,
+  so a C++ seeker matched C, C# and C++ alike, each reporting `title matches 'c'`.
+- An out-of-range argument is reported as a message naming the flag or tool parameter the caller
+  actually used, instead of an unhandled pydantic traceback quoting an internal field name.
+- A board sending a negative, NaN or infinite salary no longer ends that board's entire fetch.
+- `Retry-After` is honored when a board sends it as an HTTP-date, which RFC 9110 permits alongside
+  a number of seconds. Only the numeric form was read, so a board asking for a real pause was
+  retried on the two-second default.
 
 ## [0.1.0] - 2026-07-18
 

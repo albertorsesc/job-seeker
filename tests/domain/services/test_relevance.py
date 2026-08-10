@@ -10,6 +10,8 @@ from __future__ import annotations
 
 from collections.abc import Callable
 
+import pytest
+
 from job_seeker.domain.models import Job
 from job_seeker.domain.profile import Profile
 from job_seeker.domain.services import relevance
@@ -44,6 +46,57 @@ class TestWantedSignals:
     ) -> None:
         """Nothing to narrow by means the seeker gets everything eligible, not nothing."""
         assert _relevant(make_job(title="Anything At All"), [])
+
+
+class TestTermsWhosePunctuationIsTheMeaning:
+    """ "C++" used to split to "c", so a C++ seeker matched C, C# and C++ alike.
+
+    The reason field made it visible and nobody was looking: every one of those postings came back
+    saying "title matches 'c'". A single letter is never a useful search term and matches far too
+    much, so it is dropped and the punctuated phrase is kept whole instead.
+    """
+
+    @pytest.mark.parametrize(
+        "title,wanted",
+        [
+            pytest.param("C++ Developer", True, id="the-language-asked-for"),
+            pytest.param("C Developer", False, id="a-different-language"),
+            pytest.param("C# Developer", False, id="another-different-language"),
+            pytest.param("Embedded Engineer (C)", False, id="a-bare-c-in-parentheses"),
+        ],
+    )
+    def test_cplusplus_matches_only_cplusplus(
+        self, title: str, wanted: bool, make_job: Callable[..., Job]
+    ) -> None:
+        profile = Profile(role_include=["C++"])
+        assert _relevant(make_job(title=title), [], profile) is wanted
+
+    def test_the_reason_names_the_real_term_not_a_fragment(
+        self, make_job: Callable[..., Job]
+    ) -> None:
+        verdict = RelevanceFilter(Profile(role_include=["C++"])).assess(
+            make_job(title="Senior C++ Developer"), []
+        )
+        assert verdict.reason == "title matches 'c++'"
+
+    def test_a_leading_dot_term_matches_despite_starting_in_punctuation(
+        self, make_job: Callable[..., Job]
+    ) -> None:
+        """`\\b` needs a word character on its side, so a `\\b\\.net` pattern could never match."""
+        profile = Profile(role_include=[".NET"])
+        assert _relevant(make_job(title=".NET Developer"), [], profile)
+
+    def test_a_blank_term_contributes_nothing(self, make_job: Callable[..., Job]) -> None:
+        """A stray empty line in the profile YAML must not become a token that matches every
+        posting, which is the same failure the eligibility terms guard against."""
+        profile = Profile(role_include=["", "   ", "engineer"])
+        assert _relevant(make_job(title="Backend Engineer"), [], profile)
+        assert not _relevant(make_job(title="Aluminum Director"), [], profile)
+
+    def test_ordinary_multiword_terms_are_unaffected(self, make_job: Callable[..., Job]) -> None:
+        """Two-letter words like "ai" still count; only single characters are dropped."""
+        assert _relevant(make_job(title="Senior AI Engineer"), ["AI Engineer"])
+        assert not _relevant(make_job(title="Aluminum Director"), ["AI Engineer"])
 
 
 class TestExclusions:

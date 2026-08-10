@@ -25,6 +25,7 @@ from job_seeker.domain.models import Job, Relevance
 from job_seeker.domain.profile import Profile
 
 _WORD_SPLIT = re.compile(r"[^\w]+")
+_HAS_PUNCTUATION = re.compile(r"[^\w\s]")
 # The pattern cache is bounded because its keys are not all the seeker's own. A profile's role
 # words are a fixed handful, but the query's `terms` reach here from an MCP agent, and that server
 # runs for as long as the session does, so an unbounded cache holds every word ever searched. The
@@ -78,8 +79,22 @@ class RelevanceFilter:
 
 
 def _words(phrases: list[str]) -> set[str]:
-    """The distinct lower-cased words across a list of terms or role phrases."""
-    return {word for phrase in phrases for word in _WORD_SPLIT.split(phrase.lower()) if word}
+    """The distinct lower-cased tokens to match across a list of terms or role phrases.
+
+    A phrase carrying punctuation is kept whole as well as split, because for a technology the
+    punctuation is often the entire meaning. "C++" split to "c", which matched C, C# and C++ alike
+    and told the seeker "title matches 'c'". Single-character tokens are dropped for the same
+    reason: no useful search term is one letter, and one letter matches far too much.
+    """
+    tokens: set[str] = set()
+    for phrase in phrases:
+        lowered = phrase.strip().lower()
+        if not lowered:
+            continue
+        if _HAS_PUNCTUATION.search(lowered):
+            tokens.add(lowered)
+        tokens.update(word for word in _WORD_SPLIT.split(lowered) if len(word) > 1)
+    return tokens
 
 
 def _first_hit(words: list[str], text: str) -> str | None:
@@ -96,7 +111,11 @@ def _first_hit(words: list[str], text: str) -> str | None:
 @lru_cache(maxsize=_PATTERN_CACHE_SIZE)
 def _pattern(word: str) -> re.Pattern[str]:
     """The compiled whole-word matcher for one word. Cached: it is rebuilt per job otherwise."""
-    return re.compile(rf"\b{re.escape(word)}\b")
+    # Not `\b` at either end. A term can begin or end in punctuation ("C++", ".NET"), and `\b`
+    # needs a word character on its side, so `\b\.net` never matches and `c\+\+\b` requires a
+    # word character after the plus signs. The lookarounds say what was meant: not butted against
+    # more word characters.
+    return re.compile(rf"(?<!\w){re.escape(word)}(?!\w)")
 
 
 def _word_in(word: str, text: str) -> bool:

@@ -73,7 +73,7 @@ class TestFanOutAndCollect:
     def test_no_sources_yields_an_empty_incomplete_result(self) -> None:
         result = _run([])
         assert result.jobs == []
-        assert result.is_complete is False  # zero sources ran
+        assert (result.all_sources_ran and result.fully_scanned) is False  # zero sources ran
 
 
 class TestFailureIsolation:
@@ -89,13 +89,65 @@ class TestFailureIsolation:
         coverage = {c.source: c for c in result.coverage}
         assert coverage["bad"].failed
         assert "careless adapter" in coverage["bad"].error
-        assert result.is_complete is False
+        assert (result.all_sources_ran and result.fully_scanned) is False
 
     def test_a_reported_source_error_is_carried_into_coverage(self) -> None:
         good = FakeSource("good", SourceResult(source="good", jobs=[_job("Dev", source="good")]))
         down = FakeSource("down", SourceResult(source="down", error="HTTP 503"))
         result = _run([good, down])
         assert {c.source: c.error for c in result.coverage}["down"] == "HTTP 503"
+
+
+class TestScanDepthAndMaxResultsAreDifferentThings:
+    """One parameter used to mean both, and it silently meant the worse one.
+
+    `--limit 5` reads as "give me five results". It was a per-board fetch depth applied before
+    ranking, so it shrank the pool the answer was chosen from: the seeker got five of whatever was
+    fetched first, and the best-fitting posting might never have been read at all.
+    """
+
+    @staticmethod
+    def _board(name: str, count: int) -> FakeSource:
+        """A board of engineers whose fit rises with the index, so rank and fetch order differ."""
+        jobs = [
+            _job(
+                f"Engineer {index}",
+                source=name,
+                company=f"Co {name}{index}",
+                description=" ".join(["python"] * (index + 1)),
+            )
+            for index in range(count)
+        ]
+        return FakeSource(name, SourceResult(source=name, jobs=jobs, scanned=count))
+
+    def _search(self, sources: list[FakeSource], **query: object) -> SearchResult:
+        seeker = JobSeeker.default(list(sources), _profile())
+        return seeker.run(SearchQuery(terms=["engineer"], max_age_days=None, **query))  # type: ignore[arg-type]
+
+    def test_max_results_caps_the_output_after_ranking(self) -> None:
+        result = self._search([self._board("a", 10)], max_results=3)
+        assert len(result.jobs) == 3
+        ranks = [scored.fit.raw for scored in result.jobs]
+        assert ranks == sorted(ranks, reverse=True)  # the three best, not the three fetched first
+
+    def test_no_cap_returns_everything_ranked(self) -> None:
+        assert len(self._search([self._board("a", 10)]).jobs) == 10
+
+    def test_coverage_counts_what_matched_not_what_survived_the_cap(self) -> None:
+        """So `sum(kept) > len(jobs)` is how a caller sees the cap bit. Counting post-cap would
+        make a board that contributed ten matches look like it contributed three."""
+        result = self._search([self._board("a", 10)], max_results=3)
+        assert sum(c.kept for c in result.coverage) == 10
+        assert len(result.jobs) == 3
+
+    def test_a_deep_scan_with_a_small_cap_is_now_expressible(self) -> None:
+        """The combination that actually answers "the five best jobs", and the one the old single
+        parameter could not say: it could only fetch fewer, which returns five worse ones."""
+        result = self._search(
+            [self._board("a", 10), self._board("b", 10)], scan_depth_per_source=10, max_results=5
+        )
+        assert len(result.jobs) == 5
+        assert sum(c.kept for c in result.coverage) == 20
 
 
 class TestCombination:

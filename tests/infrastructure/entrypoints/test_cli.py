@@ -197,7 +197,7 @@ class TestABrokenAdapterDoesNotKillFind:
         coverage = {c["source"]: c for c in payload["coverage"]}
         assert coverage["jobspy"]["failed"] is True
         assert "credentials file not found" in coverage["jobspy"]["error"]
-        assert payload["is_complete"] is False
+        assert payload["all_sources_ran"] is False
         assert payload["jobs"][0]["job"]["title"] == "Python Engineer"
 
     def test_a_factory_raising_value_error_is_not_reported_as_a_bad_sources_flag(
@@ -252,7 +252,8 @@ class TestAPartialRunIsAnnouncedInEveryFormat:
         code = cli.main(["find", "--profile", str(_write_profile(tmp_path)), "--format", fmt])
         err = capsys.readouterr().err
         assert code == 0
-        assert "artial" in err  # "Partial run"
+        assert "WARNING" in err
+        assert "failed" in err
         assert "jobspy" in err
 
     def test_the_csv_on_stdout_stays_clean_so_it_can_still_be_piped(
@@ -262,9 +263,9 @@ class TestAPartialRunIsAnnouncedInEveryFormat:
         cli.main(["find", "--profile", str(_write_profile(tmp_path)), "--format", "csv"])
         out = capsys.readouterr().out
         assert out.startswith("rank,fit,")
-        assert "Partial" not in out  # the notice never contaminates the data stream
+        assert "WARNING" not in out  # the notice never contaminates the data stream
 
-    def test_a_truncated_scan_is_announced_too_not_only_a_failure(
+    def test_a_capped_scan_is_stated_but_not_raised_as_a_warning(
         self, tmp_path: Path, capsys: pytest.CaptureFixture[str], monkeypatch: pytest.MonkeyPatch
     ) -> None:
         """Truncation is the quieter half of an incomplete run: nothing broke, the board just was
@@ -284,8 +285,11 @@ class TestAPartialRunIsAnnouncedInEveryFormat:
         monkeypatch.setattr(defaults, "_BUILTINS", {"himalayas": TruncatedSource})
         cli.main(["find", "--profile", str(_write_profile(tmp_path)), "--format", "json"])
         err = capsys.readouterr().err
-        assert "truncated" in err
+        assert "capped" in err
         assert "himalayas" in err
+        # A cap happens on every ordinary run, so it must not shout: a reader who learns to skip
+        # this line skips it on the day a board is actually down.
+        assert "WARNING" not in err
 
     def test_a_complete_run_says_nothing(
         self, tmp_path: Path, capsys: pytest.CaptureFixture[str], monkeypatch: pytest.MonkeyPatch
@@ -308,8 +312,8 @@ class TestQueryBounds:
     @pytest.mark.parametrize(
         "flag,value",
         [
-            pytest.param("--limit", "0", id="limit-below-minimum"),
-            pytest.param("--limit", "2000", id="limit-above-maximum"),
+            pytest.param("--scan-depth", "0", id="scan-depth-below-minimum"),
+            pytest.param("--scan-depth", "2000", id="scan-depth-above-maximum"),
             pytest.param("--max-age-days", "0", id="max-age-days-below-minimum"),
         ],
     )
@@ -334,7 +338,7 @@ class TestQueryBounds:
     ) -> None:
         """Naming the flag is not enough: the seeker needs to know which way to move it."""
         _wire_fake_board(monkeypatch, _a_job())
-        cli.main(["find", "--profile", str(_write_profile(tmp_path)), "--limit", "2000"])
+        cli.main(["find", "--profile", str(_write_profile(tmp_path)), "--scan-depth", "2000"])
         assert "1000" in capsys.readouterr().err
 
     def test_every_out_of_range_flag_is_reported_not_only_the_first(
@@ -347,7 +351,7 @@ class TestQueryBounds:
                 "find",
                 "--profile",
                 str(_write_profile(tmp_path)),
-                "--limit",
+                "--scan-depth",
                 "0",
                 "--max-age-days",
                 "0",
@@ -355,7 +359,7 @@ class TestQueryBounds:
         )
         err = capsys.readouterr().err
         assert code == 2
-        assert "--limit" in err
+        assert "--scan-depth" in err
         assert "--max-age-days" in err
 
     def test_a_value_at_the_boundary_is_accepted(
@@ -370,14 +374,14 @@ class TestQueryBounds:
                 str(_write_profile(tmp_path)),
                 "--format",
                 "json",
-                "--limit",
+                "--scan-depth",
                 "1",
                 "--max-age-days",
                 "1",
             ]
         )
         assert code == 0
-        assert json.loads(capsys.readouterr().out)["query"]["max_results_per_source"] == 1
+        assert json.loads(capsys.readouterr().out)["query"]["scan_depth_per_source"] == 1
 
 
 class TestTopLevel:

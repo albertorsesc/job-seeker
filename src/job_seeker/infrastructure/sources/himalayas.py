@@ -22,13 +22,29 @@ from typing import Any
 
 import httpx
 
-from job_seeker.domain.models import EligibilityHints, Job, SearchQuery, SourceResult
+from job_seeker.domain.models import (
+    CurrencySource,
+    EligibilityHints,
+    Job,
+    SalaryPeriod,
+    SalaryRange,
+    SearchQuery,
+    SourceResult,
+)
 from job_seeker.infrastructure.sources import base
 
 _API_URL = "https://himalayas.app/jobs/api"
 _PAGE_SIZE = 20  # the API caps a page here regardless of what `limit` asks for
 _SCAN_CAP = 2000  # a politeness ceiling: never walk the whole six-figure feed on one query
 _PLACEHOLDER_COMPANY = "name"  # what the API returns in companyName for every record
+# Bands for classifying a figure's period, measured from live data. See `_salary_period`.
+_HOURLY_CEILING = 200.0
+_ANNUAL_FLOOR = 50_000.0
+# The annual floor is a magnitude, so it only means anything in a currency of comparable
+# denomination. A monthly 3,000,000 COP or 400,000 JPY clears 50,000 and would read as annual, so
+# the upper band applies only where it was measured. Everything else falls through to unknown,
+# which is the safe direction. Extend this only with live evidence for the currency added.
+_CALIBRATED_CURRENCIES = frozenset({"USD", "EUR", "CAD", "GBP", "PLN"})
 
 
 class HimalayasSource:
@@ -80,11 +96,11 @@ class HimalayasSource:
                             continue
                         kept_any = True
                         jobs.append(job)
-                        if len(jobs) >= query.max_results_per_source:
+                        if len(jobs) >= query.scan_depth_per_source:
                             records_after_break = len(page) - (index + 1)
                             break
 
-                    if len(jobs) >= query.max_results_per_source:
+                    if len(jobs) >= query.scan_depth_per_source:
                         # Truncated only if more could remain: records still on this page, or a
                         # full page, which means more pages follow. Filling the result exactly on
                         # the last record of a short final page leaves nothing, so not truncated.
@@ -165,22 +181,64 @@ def _company(record: dict[str, Any]) -> str:
     return slug.replace("-", " ").title()
 
 
-def _salary(record: dict[str, Any]) -> str:
-    minimum = _as_number(record.get("minSalary"))
-    maximum = _as_number(record.get("maxSalary"))
-    currency = str(record.get("currency") or "").strip()
-    if not minimum and not maximum:
-        return ""
-    if minimum and maximum and minimum != maximum:
-        return f"{currency} {minimum:,} - {maximum:,}".strip()
-    value = minimum or maximum
-    return f"{currency} {value:,}".strip()
+def _salary(record: dict[str, Any]) -> SalaryRange | None:
+    """The figures the board published, with the currency it published alongside them.
+
+    The currency is the only board-specific part: Himalayas reports one, so it is read rather than
+    assumed. Everything else, including what to do with a figure the board should not have sent,
+    is shared in `base.salary_from_bounds`.
+    """
+    currency = str(record.get("currency") or "").strip() or None
+    return base.salary_from_bounds(
+        record.get("minSalary"),
+        record.get("maxSalary"),
+        currency=currency,
+        # Read from the payload, never supplied by this adapter, so it is always a published fact.
+        currency_source=CurrencySource.PUBLISHED if currency else None,
+        period=_salary_period(record.get("minSalary"), record.get("maxSalary"), currency),
+    )
 
 
-def _as_number(value: Any) -> int | float | None:
-    """A salary as a number, or None. A string like "120k" formats fine as text but crashes
-    `f"{x:,}"`, so coerce here rather than let it escape the never-raise contract."""
-    return value if isinstance(value, int | float) and not isinstance(value, bool) else None
+def _salary_period(minimum: Any, maximum: Any, currency: str | None) -> SalaryPeriod | None:
+    """What a Himalayas figure is quoted per, or None when it cannot be established.
+
+    Himalayas publishes no period field and its figures are genuinely mixed: an 85 and a 146,000
+    arrive in the same currency on the same page. So this adapter infers, from magnitude, within
+    bands wide enough that the inference is safe, and refuses to guess between them.
+
+    Measured over 311 pay-bearing records across 30 live pages:
+
+    - 47 records below 200, the largest being 150. No annual salary is 150 in any currency, and
+      the titles are hourly work ("Aerospace Engineer 85-85 USD"). Treated as HOUR.
+    - 243 records at or above 50,000, the smallest being exactly 50,000. Treated as YEAR.
+    - 21 records in between, and that band is genuinely mixed: "Senior Software Engineer -Colombia"
+      at 3,255-4,160 USD is monthly, "COB Claims Trainer" at 47,000-67,200 USD is annual, and
+      14,000-16,000 PLN is monthly where 26,000-28,000 GBP is annual. Magnitude cannot separate
+      them, so the answer is None and the figures simply do not annualize.
+
+    **Known limit:** the upper band is calibrated on the currencies actually observed (USD, EUR,
+    CAD, GBP, PLN). A monthly figure in a low-denomination currency, 3,000,000 COP or 400,000 JPY,
+    exceeds 50,000 and would be read as annual. Narrow the band by currency if such a posting ever
+    appears; erring toward None is the safe direction and this rule does not yet do it there.
+    """
+    figure = _first_figure(minimum, maximum)
+    if figure is None:
+        return None
+    if figure < _HOURLY_CEILING:
+        # Safe in any currency: no annual salary anywhere is under 200 units.
+        return SalaryPeriod.HOUR
+    if figure >= _ANNUAL_FLOOR and (currency or "").upper() in _CALIBRATED_CURRENCIES:
+        return SalaryPeriod.YEAR
+    return None
+
+
+def _first_figure(minimum: Any, maximum: Any) -> float | None:
+    """Whichever bound the board actually sent, for classifying the pair. Both bounds are quoted
+    the same way, so either settles it."""
+    for value in (minimum, maximum):
+        if isinstance(value, int | float) and not isinstance(value, bool) and value > 0:
+            return float(value)
+    return None
 
 
 def _hints(record: dict[str, Any]) -> EligibilityHints:

@@ -99,8 +99,17 @@ class JobSeeker:
         # Rank on the raw integer sum, not the normalized value: same order within a run (the
         # total is constant), but exact, so ordering never turns on a rounded float.
         ranked = sorted(suitable, key=lambda scored: scored.fit.raw, reverse=True)
+        # The cap is applied after ranking, which is the whole point of having it: asking for five
+        # results now returns the five best, where the old per-source depth returned five of
+        # whatever happened to be fetched first.
+        capped = ranked[: query.max_results] if query.max_results is not None else ranked
         return SearchResult(
-            query=query, jobs=ranked, coverage=self._coverage(source_results, ranked)
+            # Coverage counts what each board *matched*, before the cap, so `sum(kept)` exceeding
+            # `len(jobs)` is exactly how a caller sees that the cap bit. Counting post-cap would
+            # make a board that contributed twenty matches look like it contributed two.
+            query=query,
+            jobs=capped,
+            coverage=self._coverage(source_results, ranked),
         )
 
     def _fetch_all(self, query: SearchQuery) -> list[SourceResult]:

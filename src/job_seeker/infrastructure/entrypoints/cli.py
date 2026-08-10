@@ -25,10 +25,11 @@ from job_seeker.infrastructure.sources.defaults import register_builtins
 
 # `SearchQuery` owns the bounds, because the MCP tool accepts the same numbers and the two must
 # not disagree about what is acceptable. So argparse does not re-declare them, and this maps a
-# rejected field back to the flag the seeker typed: "max_results_per_source" is a name they never
+# rejected field back to the flag the seeker typed: "scan_depth_per_source" is a name they never
 # wrote and cannot act on.
 _FIELD_FLAGS = {
-    "max_results_per_source": "--limit",
+    "scan_depth_per_source": "--scan-depth",
+    "max_results": "--max-results",
     "max_age_days": "--max-age-days",
     "terms": "--terms",
 }
@@ -47,7 +48,18 @@ def _build_parser() -> argparse.ArgumentParser:
     find = commands.add_parser("find", help="search the boards and rank what you can hold")
     find.add_argument("--profile", help="path to your profile file (default: $JOB_SEEKER_PROFILE)")
     find.add_argument("--terms", help="comma-separated search terms (default: the profile's)")
-    find.add_argument("--limit", type=int, default=50, help="max results per source (default: 50)")
+    find.add_argument(
+        "--scan-depth",
+        type=int,
+        default=50,
+        help="how many postings to read per board (default: 50). Raising this widens the pool a "
+        "result is chosen from; it does not lengthen the output.",
+    )
+    find.add_argument(
+        "--max-results",
+        type=int,
+        help="cap the ranked output (default: no cap). Applied after ranking, so it keeps the best.",
+    )
     find.add_argument("--max-age-days", type=int, default=30, help="ignore older postings")
     find.add_argument("--sources", help="comma-separated source names (default: all)")
     find.add_argument("--format", choices=FORMATS, default="html", help="output format")
@@ -104,7 +116,10 @@ def _find(args: argparse.Namespace) -> int:
 
     try:
         query = SearchQuery(
-            terms=terms, max_results_per_source=args.limit, max_age_days=args.max_age_days
+            terms=terms,
+            scan_depth_per_source=args.scan_depth,
+            max_results=args.max_results,
+            max_age_days=args.max_age_days,
         )
     except ValidationError as exc:
         print(describe_bounds_error(exc, _FIELD_FLAGS), file=sys.stderr)
@@ -117,8 +132,9 @@ def _find(args: argparse.Namespace) -> int:
         print(str(exc), file=sys.stderr)
         return 2
 
-    if not result.is_complete:
-        print(_partial_run_notice(result), file=sys.stderr)
+    notice = _run_notice(result)
+    if notice:
+        print(notice, file=sys.stderr)
 
     report = reporter_for(args.format).render(result)
     if args.out:
@@ -133,24 +149,33 @@ def _find(args: argparse.Namespace) -> int:
     return 0
 
 
-def _partial_run_notice(result: SearchResult) -> str:
-    """Why the run did not see everything, on stderr, whatever the format.
+def _run_notice(result: SearchResult) -> str:
+    """What the run did not see, on stderr, whatever the format. "" when there is nothing to say.
 
     JSON and HTML carry coverage inside the report, but CSV is a flat table of jobs with nowhere to
     put it, so a board that failed there was a header row and silence. stderr tells the human
     without contaminating a stdout someone is piping into jq or a spreadsheet.
+
+    Two messages, not one, and the wording is the point. A capped scan happens on every ordinary
+    run, so phrasing it as a warning taught the reader to skip the line, and then they skip it on
+    the day a board is down. A failure is announced; a cap is merely stated.
     """
     failed = [c.source for c in result.coverage if c.failed]
-    truncated = [c.source for c in result.coverage if c.truncated and not c.failed]
-    parts = []
-    if failed:
-        parts.append(f"failed: {', '.join(failed)}")
-    if truncated:
-        parts.append(f"scan truncated: {', '.join(truncated)}")
-    # No coverage at all means no source ran, the most incomplete run there is, and the one with
-    # nothing to list. Naming it beats an empty parenthesis.
-    detail = "; ".join(parts) if parts else "no sources ran"
-    return f"Partial run, these results are not the whole picture ({detail})."
+    if not result.all_sources_ran:
+        # No coverage at all means no source ran, the most incomplete run there is, and the one
+        # with nothing to list. Naming it beats an empty parenthesis.
+        detail = ", ".join(failed) if failed else "no sources ran"
+        return (
+            f"WARNING: {len(failed)} of {len(result.coverage)} boards failed ({detail}). "
+            f"These results are missing whatever those boards would have returned."
+        )
+    if not result.fully_scanned:
+        capped = ", ".join(c.source for c in result.coverage if c.truncated)
+        return (
+            f"Note: scan capped at --scan-depth on {capped}; these are the best of what was read, "
+            f"not of everything posted."
+        )
+    return ""
 
 
 def _resolve_terms(flag: str | None, from_profile: list[str]) -> list[str]:

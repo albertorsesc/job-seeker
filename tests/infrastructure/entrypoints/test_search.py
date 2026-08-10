@@ -94,7 +94,7 @@ class TestABoardThatCannotBeConstructed:
         """The whole point of coverage: a run missing a board must not look healthy."""
         registry.register("broken", _raises_runtime_error)
         result = execute_search(_profile(), SearchQuery(), source_names=None)
-        assert not result.is_complete
+        assert not (result.all_sources_ran and result.fully_scanned)
 
     def test_the_healthy_boards_still_return_their_jobs(self) -> None:
         _register("working")

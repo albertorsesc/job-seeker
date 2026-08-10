@@ -7,6 +7,7 @@ is exactly why `build_server()` exists separately. The end-to-end path is covere
 
 from __future__ import annotations
 
+import json
 import subprocess
 import sys
 from pathlib import Path
@@ -46,19 +47,19 @@ def _write_profile(tmp_path: Path) -> Path:
 
 
 class TestFindJobsRejectsOutOfRangeArgumentsInTheAgentsOwnWords:
-    """The agent writes `limit`; the model rejects `max_results_per_source`.
+    """The agent writes `scan_depth`; the model rejects `scan_depth_per_source`.
 
-    An agent handed "max_results_per_source: Input should be less than or equal to 1000" cannot act
+    An agent handed "scan_depth_per_source: Input should be less than or equal to 1000" cannot act
     on it: that is not a parameter it passed, and `find_jobs` does not expose one by that name. The
-    CLI already translates its rejections back to `--limit`; the MCP surface is the public contract
+    CLI already translates its rejections back to `--scan-depth`; the MCP surface is the public contract
     for agents and must not be the worse-served of the two.
     """
 
     @pytest.mark.parametrize(
         "arguments,expected",
         [
-            pytest.param({"limit": 100000}, "limit", id="limit-above-maximum"),
-            pytest.param({"limit": 0}, "limit", id="limit-below-minimum"),
+            pytest.param({"scan_depth": 100000}, "scan_depth", id="scan-depth-above-maximum"),
+            pytest.param({"scan_depth": 0}, "scan_depth", id="scan-depth-below-minimum"),
             pytest.param({"max_age_days": 0}, "max_age_days", id="max-age-days-below-minimum"),
         ],
     )
@@ -75,7 +76,45 @@ class TestFindJobsRejectsOutOfRangeArgumentsInTheAgentsOwnWords:
             await server.call_tool("find_jobs", {"terms": ["engineer"], **arguments})
         message = str(caught.value)
         assert expected in message
-        assert "max_results_per_source" not in message or expected == "max_results_per_source"
+        assert "scan_depth_per_source" not in message or expected == "scan_depth_per_source"
+
+
+class TestTheAgentIsToldWhatItWillReceive:
+    """`find_jobs` returned `dict[str, Any]`, so `tools/list` published no output schema at all.
+
+    An agent learned the payload shape by looking at one result and generalising, which is exactly
+    the inference the engine exists to remove. Returning the model publishes the contract.
+    """
+
+    async def test_find_jobs_publishes_an_output_schema(self) -> None:
+        tool = await self._find_jobs_tool()
+        assert tool.outputSchema is not None
+        assert tool.outputSchema.get("properties", {}).keys() >= {"jobs", "coverage", "query"}
+
+    @pytest.mark.parametrize("field", ["salary", "annual_minimum", "eligibility", "fit"])
+    async def test_the_schema_describes_the_fields_an_agent_reasons_with(self, field: str) -> None:
+        assert field in json.dumps((await self._find_jobs_tool()).outputSchema)
+
+    @pytest.mark.parametrize("derived", ["all_sources_ran", "annual_minimum", "is_eligible"])
+    async def test_derived_fields_are_named_in_the_descriptions(self, derived: str) -> None:
+        """They cannot be schema *properties*: the SDK builds the output schema in validation mode
+        (`model_json_schema(schema_generator=StrictJsonSchema)`, no `mode=`), and pydantic omits
+        computed fields there. They do arrive in the payload, so each model's description says so
+        rather than leaving the agent to discover them.
+        """
+        assert derived in json.dumps((await self._find_jobs_tool()).outputSchema)
+
+    async def test_the_schema_does_not_carry_maintainer_rationale(self) -> None:
+        """The description text ships to every agent on every session, so it explains the payload
+        rather than the project's history. These phrases were in it and are now in comments."""
+        schema = json.dumps((await self._find_jobs_tool()).outputSchema)
+        for rationale in ("an earlier shape", "is a bug the whole", "Revisit if"):
+            assert rationale not in schema
+
+    @staticmethod
+    async def _find_jobs_tool() -> Any:
+        tools = await mcp_server.build_server().list_tools()
+        return next(tool for tool in tools if tool.name == "find_jobs")
 
 
 class TestBuildServer:
@@ -140,10 +179,39 @@ class TestListSourcesTool:
 
 
 class TestDescribeEngineTool:
-    async def test_reports_that_search_works_and_the_version(self) -> None:
+    """The health tool has to be able to report ill health, or it is decoration.
+
+    `can_search` was hardcoded True, so the one question an agent would call this tool to answer,
+    "is this thing configured?", was the one it could not detect. A missing profile is the most
+    likely failure by a wide margin, and it surfaced only as a mid-search exception.
+    """
+
+    async def test_reports_that_search_works_when_a_profile_is_configured(
+        self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        monkeypatch.setenv("JOB_SEEKER_PROFILE", str(_write_profile(tmp_path)))
         payload = await _structured(mcp_server.build_server(), "describe_engine")
         assert payload["can_search"] is True
+        assert payload["profile_problem"] == ""
         assert payload["version"] == __version__
+
+    async def test_reports_that_it_cannot_search_with_no_profile_configured(
+        self, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        monkeypatch.delenv("JOB_SEEKER_PROFILE", raising=False)
+        payload = await _structured(mcp_server.build_server(), "describe_engine")
+        assert payload["can_search"] is False
+        assert "JOB_SEEKER_PROFILE" in payload["profile_problem"]
+
+    async def test_a_malformed_profile_is_reported_here_not_discovered_mid_search(
+        self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        broken = tmp_path / "p.md"
+        broken.write_text("---\nname: : :\n---\n")
+        monkeypatch.setenv("JOB_SEEKER_PROFILE", str(broken))
+        payload = await _structured(mcp_server.build_server(), "describe_engine")
+        assert payload["can_search"] is False
+        assert payload["profile_problem"]
 
 
 class TestFindJobsTool:

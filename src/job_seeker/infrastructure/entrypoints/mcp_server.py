@@ -19,8 +19,11 @@ from typing import TYPE_CHECKING, Any
 from pydantic import ValidationError
 
 from job_seeker import __version__
-from job_seeker.domain.models import SearchQuery
-from job_seeker.infrastructure.config.profile_loader import MarkdownProfileProvider
+from job_seeker.domain.models import SearchQuery, SearchResult
+from job_seeker.infrastructure.config.profile_loader import (
+    MarkdownProfileProvider,
+    ProfileError,
+)
 from job_seeker.infrastructure.entrypoints.bounds import describe_bounds_error
 from job_seeker.infrastructure.entrypoints.search import execute_search
 from job_seeker.infrastructure.sources import registry
@@ -29,7 +32,8 @@ from job_seeker.infrastructure.sources.defaults import register_builtins
 # How `find_jobs` spells the arguments `SearchQuery` validates. The CLI keeps its own mapping to
 # flags; the two differ on purpose, since an agent passes `limit` where a seeker types `--limit`.
 _FIELD_PARAMS = {
-    "max_results_per_source": "limit",
+    "scan_depth_per_source": "scan_depth",
+    "max_results": "max_results",
     "max_age_days": "max_age_days",
     "terms": "terms",
 }
@@ -82,20 +86,25 @@ def build_server() -> FastMCP:
     @server.tool()
     def describe_engine() -> dict[str, Any]:
         """Report what this engine is and what it can currently do."""
+        problem = _profile_problem()
         return {
             "version": __version__,
             "registered_sources": registry.names(),
-            "can_search": True,
+            # Actually checked, not asserted. A hardcoded True made this tool blind to the single
+            # most likely failure, which is the one an agent would call it to discover.
+            "can_search": problem is None and bool(registry.names()),
+            "profile_problem": problem or "",
             "note": "Call find_jobs to search. It reads the profile from JOB_SEEKER_PROFILE.",
         }
 
     @server.tool()
     def find_jobs(
         terms: list[str] | None = None,
-        limit: int = 50,
+        scan_depth: int = 50,
+        max_results: int | None = None,
         max_age_days: int = 30,
         sources: list[str] | None = None,
-    ) -> dict[str, Any]:
+    ) -> SearchResult:
         """Search the job boards and return the postings the seeker can actually hold, ranked.
 
         The seeker's profile is read from the JOB_SEEKER_PROFILE environment variable; it is the
@@ -112,7 +121,8 @@ def build_server() -> FastMCP:
         try:
             query = SearchQuery(
                 terms=terms or profile.search_terms,
-                max_results_per_source=limit,
+                scan_depth_per_source=scan_depth,
+                max_results=max_results,
                 max_age_days=max_age_days,
             )
         except ValidationError as exc:
@@ -120,10 +130,23 @@ def build_server() -> FastMCP:
             # `max_results_per_source`, which is not a parameter this tool exposes, so an agent
             # reading the raw message cannot tell which argument to change or to what.
             raise ValueError(describe_bounds_error(exc, _FIELD_PARAMS)) from exc
-        result = execute_search(profile, query, sources)
-        return result.model_dump(mode="json")
+        return execute_search(profile, query, sources)
 
     return server
+
+
+def _profile_problem() -> str | None:
+    """Why a search would fail right now, or None if the profile loads.
+
+    Loading is the check: an unset variable, a missing file and malformed YAML are all things a
+    seeker hits, and all of them surface here as the message `find_jobs` would have raised, so an
+    agent can report the cause instead of discovering it mid-search.
+    """
+    try:
+        MarkdownProfileProvider.from_env().load()
+    except ProfileError as exc:
+        return str(exc)
+    return None
 
 
 def main() -> int:

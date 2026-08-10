@@ -12,7 +12,13 @@ from __future__ import annotations
 
 from html import escape
 
-from job_seeker.domain.models import ScoredJob, SearchResult, SourceCoverage
+from job_seeker.domain.models import (
+    SalaryPeriod,
+    SalaryRange,
+    ScoredJob,
+    SearchResult,
+    SourceCoverage,
+)
 
 _STYLE = """
 :root { color-scheme: light dark; }
@@ -57,7 +63,8 @@ class HtmlReporter:
 
 def _job_html(rank: int, scored: ScoredJob) -> str:
     job = scored.job
-    salary = f" &middot; {escape(job.salary)}" if job.salary else ""
+    pay = _salary_text(job.salary)
+    salary = f" &middot; {escape(pay)}" if pay else ""
     return (
         '<article class="job">\n'
         f"  <h2>{rank}. {_title_html(job.title, job.url)}</h2>\n"
@@ -69,6 +76,54 @@ def _job_html(rank: int, scored: ScoredJob) -> str:
         f'  <p class="reason">{escape(scored.eligibility.reason)}</p>\n'
         "</article>"
     )
+
+
+def _salary_text(salary: SalaryRange | None) -> str:
+    """Pay as a person reads it, or "" when the board published nothing.
+
+    Formatting lives here rather than in the adapters. How a range reads is presentation, and two
+    adapters each formatting their own was how they came to disagree about currency. Falls back to
+    the board's own words when it published prose instead of figures.
+    """
+    if salary is None:
+        return ""
+    figures = _salary_figures(salary)
+    if not figures:
+        # A note is prose, not an amount: "Competitive, DOE", or an explanation of why figures were
+        # withheld. Prefixing a currency to it produced "MXN board published an inverted range".
+        # The currency qualifies a number, and there is no number here.
+        return salary.note
+    text = f"{salary.currency or ''} {figures}".strip()
+    if salary.period is None:
+        return text
+    text = f"{text} per {salary.period.value}"
+    # An hourly or monthly figure is not comparable to the annual ones beside it, so the
+    # annualized equivalent is shown alongside rather than instead: the board's own number stays
+    # the headline, and "~" plus "est." marks the derived one as an assumption, because it is one
+    # (full time, 40 hours a week).
+    annual = _annual_figures(salary)
+    if annual and salary.period is not SalaryPeriod.YEAR:
+        text = f"{text} (~{salary.currency or ''} {annual}/year est.)".replace("( ~", "(~")
+    return text
+
+
+def _annual_figures(salary: SalaryRange) -> str:
+    """The annualized bounds, grouped, or "" when the period is unknown."""
+    low, high = salary.annual_minimum, salary.annual_maximum
+    if low is not None and high is not None and low != high:
+        return f"{low:,.0f} - {high:,.0f}"
+    value = low if low is not None else high
+    return f"{value:,.0f}" if value is not None else ""
+
+
+def _salary_figures(salary: SalaryRange) -> str:
+    """The numbers, grouped, with no currency. Equal bounds render once: "150,000 - 150,000" is
+    noise, not a range."""
+    low, high = salary.minimum, salary.maximum
+    if low is not None and high is not None and low != high:
+        return f"{low:,.0f} - {high:,.0f}"
+    value = low if low is not None else high
+    return f"{value:,.0f}" if value is not None else ""
 
 
 def _matched_html(matched: dict[str, int]) -> str:
@@ -96,10 +151,21 @@ def _title_html(title: str, url: str) -> str:
 
 
 def _coverage_html(result: SearchResult) -> str:
-    complete = "complete" if result.is_complete else "partial"
-    parts = [escape(f"{len(result.jobs)} jobs, {complete} coverage")]
+    parts = [escape(f"{len(result.jobs)} jobs, {_coverage_state(result)}")]
     parts.extend(escape(_source_summary(cov)) for cov in result.coverage)
     return " &middot; ".join(parts)  # each part escaped above; the separator is a literal entity
+
+
+def _coverage_state(result: SearchResult) -> str:
+    """How much of the search actually happened, naming the two facts separately.
+
+    A board failing and a scan being capped are different events with different consequences, and
+    one word for both was "partial" on every run.
+    """
+    if not result.all_sources_ran:
+        failed = [c.source for c in result.coverage if c.failed] or ["no sources ran"]
+        return f"INCOMPLETE, board(s) failed: {', '.join(failed)}"
+    return "all boards ran" if result.fully_scanned else "all boards ran, scans capped"
 
 
 def _source_summary(coverage: SourceCoverage) -> str:
