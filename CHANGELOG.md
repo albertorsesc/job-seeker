@@ -67,6 +67,10 @@ Pre-1.0 and not yet depended on, so these breaks are taken now rather than carri
   29,000 tokens, 82% of it descriptions, and the SDK sends the payload twice; the same search is
   now about 7,200. Trimming happens at the tool boundary, so scoring and eligibility still read
   the full text.
+- An unknown key in a profile is now an error naming the key, instead of being silently ignored.
+  A real profile carried `exclude_us_only: true` and two other rules from a superseded schema; all
+  three were dropped in silence, the profile reported itself valid, and a seeker who cannot work in
+  the United States was shown US-only roles as eligible. A misspelled rule failed the same way.
 - Cross-board dedup no longer discards data. The freshest posting is still the representative, but
   a field it lacks is filled from its siblings, so a copy posted an hour later with no salary no
   longer takes a published salary with it.
