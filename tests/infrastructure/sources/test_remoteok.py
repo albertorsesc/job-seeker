@@ -96,6 +96,18 @@ class TestNormalization:
         job = _fetch([_job(salary_min=0, salary_max=0)]).jobs[0]
         assert job.salary == ""
 
+    def test_a_minimum_only_salary_renders_as_a_single_figure(self) -> None:
+        """RemoteOK uses 0 for "unspecified", so a floor with no ceiling is ordinary data. It must
+        not render as a range against zero."""
+        assert _fetch([_job(salary_min=120000, salary_max=0)]).jobs[0].salary == "USD 120,000"
+
+    def test_a_maximum_only_salary_renders_as_a_single_figure(self) -> None:
+        assert _fetch([_job(salary_min=0, salary_max=160000)]).jobs[0].salary == "USD 160,000"
+
+    def test_an_equal_min_and_max_renders_once_not_as_a_range(self) -> None:
+        """A fixed-rate posting. "USD 150,000 - 150,000" is noise."""
+        assert _fetch([_job(salary_min=150000, salary_max=150000)]).jobs[0].salary == "USD 150,000"
+
 
 class TestBudgetAndFreshness:
     def test_stops_at_max_results_and_marks_truncated(self) -> None:

@@ -34,6 +34,7 @@ mcp = ["mcp>=1.2"]
 dev = [
     "pytest>=8.0",
     "pytest-asyncio>=0.23",
+    "pytest-cov>=5.0",
     "respx>=0.21",
     "ruff>=0.6",
     "mypy>=1.11",
@@ -71,6 +72,18 @@ testpaths = ["tests"]
 # (tests/sources/test_base.py and tests/reporting/test_base.py) without __init__.py files.
 addopts = "-q --import-mode=importlib --strict-markers --strict-config"
 asyncio_mode = "auto"
+
+[tool.coverage.run]
+source = ["src/job_seeker"]
+# Branch coverage, not statement: this codebase's risk lives in branches, not in unrun lines. The
+# gaps that matter are shapes like "the board reported a restriction but the seeker is not in it",
+# which is a branch through a line that statement coverage already counts as covered.
+branch = true
+
+[tool.coverage.report]
+show_missing = true
+# The interesting output is the handful of files with gaps, not thirty rows of 100%.
+skip_covered = true
 
 [tool.mypy]
 python_version = "3.11"

@@ -8,7 +8,7 @@ from pathlib import Path
 import pytest
 
 from job_seeker import __version__
-from job_seeker.domain.models import EligibilityHints, Job
+from job_seeker.domain.models import EligibilityHints, Job, SearchQuery, SourceResult
 from job_seeker.infrastructure.entrypoints import cli
 from job_seeker.infrastructure.sources import defaults, registry
 
@@ -170,6 +170,214 @@ class TestFindCommand:
         profile.write_text("---\nlocation:\n  country: Testland\n---\n")
         assert cli.main(["find", "--profile", str(profile)]) == 2
         assert "narrow" in capsys.readouterr().err
+
+
+class TestABrokenAdapterDoesNotKillFind:
+    """`sources` and `find` must agree about a board whose constructor raises.
+
+    `sources` reports it as broken and exits 0 (TestSourcesCommand above). `find` used to let the
+    exception escape `main()` entirely, so the seeker got a traceback and exit 1 from one command
+    and a tidy line from the other, for the same board.
+    """
+
+    def test_find_reports_the_broken_board_instead_of_tracebacking(
+        self, tmp_path: Path, capsys: pytest.CaptureFixture[str], monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        def broken() -> FakeSource:
+            raise RuntimeError("credentials file not found")
+
+        monkeypatch.setattr(
+            defaults,
+            "_BUILTINS",
+            {"fake": lambda: FakeSource("fake", jobs=[_a_job()]), "jobspy": broken},
+        )
+        code = cli.main(["find", "--profile", str(_write_profile(tmp_path)), "--format", "json"])
+        assert code == 0
+        payload = json.loads(capsys.readouterr().out)
+        coverage = {c["source"]: c for c in payload["coverage"]}
+        assert coverage["jobspy"]["failed"] is True
+        assert "credentials file not found" in coverage["jobspy"]["error"]
+        assert payload["is_complete"] is False
+        assert payload["jobs"][0]["job"]["title"] == "Python Engineer"
+
+    def test_a_factory_raising_value_error_is_not_reported_as_a_bad_sources_flag(
+        self, tmp_path: Path, capsys: pytest.CaptureFixture[str], monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        """pydantic's ValidationError is a ValueError, so an adapter validating its config on
+        construction used to be printed under the `--sources` typo handler."""
+
+        def broken() -> FakeSource:
+            raise ValueError("token must not be empty")
+
+        monkeypatch.setattr(defaults, "_BUILTINS", {"jobspy": broken})
+        code = cli.main(["find", "--profile", str(_write_profile(tmp_path)), "--format", "json"])
+        captured = capsys.readouterr()
+        assert code == 0
+        assert "unknown source" not in captured.err
+        payload = json.loads(captured.out)
+        assert "token must not be empty" in payload["coverage"][0]["error"]
+
+    def test_a_genuinely_unknown_source_name_is_still_a_usage_error(
+        self, tmp_path: Path, capsys: pytest.CaptureFixture[str], monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        _wire_fake_board(monkeypatch, _a_job())
+        code = cli.main(
+            ["find", "--profile", str(_write_profile(tmp_path)), "--sources", "himalyas"]
+        )
+        assert code == 2
+        assert "himalyas" in capsys.readouterr().err
+
+
+class TestAPartialRunIsAnnouncedInEveryFormat:
+    """JSON and HTML carry coverage in the report. CSV is a flat job table with nowhere to put it.
+
+    So a failed board under `--format csv` was a header row and silence, exit 0, which is exactly
+    the "a partial run mistaken for a thorough one" the coverage design exists to prevent. The
+    notice goes to stderr, so stdout stays pipeable into jq or a spreadsheet.
+    """
+
+    @staticmethod
+    def _broken() -> FakeSource:
+        raise RuntimeError("no credentials")
+
+    @pytest.mark.parametrize("fmt", ["csv", "json", "html"])
+    def test_a_failed_board_is_announced_on_stderr_whatever_the_format(
+        self,
+        fmt: str,
+        tmp_path: Path,
+        capsys: pytest.CaptureFixture[str],
+        monkeypatch: pytest.MonkeyPatch,
+    ) -> None:
+        monkeypatch.setattr(defaults, "_BUILTINS", {"jobspy": self._broken})
+        code = cli.main(["find", "--profile", str(_write_profile(tmp_path)), "--format", fmt])
+        err = capsys.readouterr().err
+        assert code == 0
+        assert "artial" in err  # "Partial run"
+        assert "jobspy" in err
+
+    def test_the_csv_on_stdout_stays_clean_so_it_can_still_be_piped(
+        self, tmp_path: Path, capsys: pytest.CaptureFixture[str], monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        monkeypatch.setattr(defaults, "_BUILTINS", {"jobspy": self._broken})
+        cli.main(["find", "--profile", str(_write_profile(tmp_path)), "--format", "csv"])
+        out = capsys.readouterr().out
+        assert out.startswith("rank,fit,")
+        assert "Partial" not in out  # the notice never contaminates the data stream
+
+    def test_a_truncated_scan_is_announced_too_not_only_a_failure(
+        self, tmp_path: Path, capsys: pytest.CaptureFixture[str], monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        """Truncation is the quieter half of an incomplete run: nothing broke, the board just was
+        not read to the end, so "the best jobs" means "the best of what we looked at"."""
+
+        class TruncatedSource:
+            name = "himalayas"
+
+            def is_available(self) -> bool:
+                return True
+
+            def fetch(self, query: SearchQuery, /) -> SourceResult:
+                return SourceResult(
+                    source="himalayas", jobs=[_a_job()], scanned=2000, truncated=True
+                )
+
+        monkeypatch.setattr(defaults, "_BUILTINS", {"himalayas": TruncatedSource})
+        cli.main(["find", "--profile", str(_write_profile(tmp_path)), "--format", "json"])
+        err = capsys.readouterr().err
+        assert "truncated" in err
+        assert "himalayas" in err
+
+    def test_a_complete_run_says_nothing(
+        self, tmp_path: Path, capsys: pytest.CaptureFixture[str], monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        """A notice on every run is a notice nobody reads."""
+        _wire_fake_board(monkeypatch, _a_job())
+        cli.main(["find", "--profile", str(_write_profile(tmp_path)), "--format", "json"])
+        assert capsys.readouterr().err == ""
+
+
+class TestQueryBounds:
+    """`SearchQuery` bounds `--limit` and `--max-age-days`; the CLI must report a breach, not
+    traceback.
+
+    The bounds live on the model (one source of truth, shared with the MCP tool). argparse does
+    not re-declare them, so the CLI's job is to turn the model's rejection into a line naming the
+    flag the seeker actually typed.
+    """
+
+    @pytest.mark.parametrize(
+        "flag,value",
+        [
+            pytest.param("--limit", "0", id="limit-below-minimum"),
+            pytest.param("--limit", "2000", id="limit-above-maximum"),
+            pytest.param("--max-age-days", "0", id="max-age-days-below-minimum"),
+        ],
+    )
+    def test_an_out_of_range_value_is_a_clear_error_not_a_traceback(
+        self,
+        flag: str,
+        value: str,
+        tmp_path: Path,
+        capsys: pytest.CaptureFixture[str],
+        monkeypatch: pytest.MonkeyPatch,
+    ) -> None:
+        _wire_fake_board(monkeypatch, _a_job())
+        code = cli.main(["find", "--profile", str(_write_profile(tmp_path)), flag, value])
+        captured = capsys.readouterr()
+        assert code == 2
+        assert flag in captured.err
+        assert "Traceback" not in captured.err
+        assert captured.out == ""  # the failure path never writes to stdout
+
+    def test_the_message_says_what_was_wrong_with_the_value(
+        self, tmp_path: Path, capsys: pytest.CaptureFixture[str], monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        """Naming the flag is not enough: the seeker needs to know which way to move it."""
+        _wire_fake_board(monkeypatch, _a_job())
+        cli.main(["find", "--profile", str(_write_profile(tmp_path)), "--limit", "2000"])
+        assert "1000" in capsys.readouterr().err
+
+    def test_every_out_of_range_flag_is_reported_not_only_the_first(
+        self, tmp_path: Path, capsys: pytest.CaptureFixture[str], monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        """Reporting one at a time turns a single mistake into a sequence of failed runs."""
+        _wire_fake_board(monkeypatch, _a_job())
+        code = cli.main(
+            [
+                "find",
+                "--profile",
+                str(_write_profile(tmp_path)),
+                "--limit",
+                "0",
+                "--max-age-days",
+                "0",
+            ]
+        )
+        err = capsys.readouterr().err
+        assert code == 2
+        assert "--limit" in err
+        assert "--max-age-days" in err
+
+    def test_a_value_at_the_boundary_is_accepted(
+        self, tmp_path: Path, capsys: pytest.CaptureFixture[str], monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        """The guard must reject what the model rejects and nothing more."""
+        _wire_fake_board(monkeypatch, _a_job())
+        code = cli.main(
+            [
+                "find",
+                "--profile",
+                str(_write_profile(tmp_path)),
+                "--format",
+                "json",
+                "--limit",
+                "1",
+                "--max-age-days",
+                "1",
+            ]
+        )
+        assert code == 0
+        assert json.loads(capsys.readouterr().out)["query"]["max_results_per_source"] == 1
 
 
 class TestTopLevel:

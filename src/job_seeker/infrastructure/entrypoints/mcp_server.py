@@ -16,12 +16,23 @@ import importlib.util
 import sys
 from typing import TYPE_CHECKING, Any
 
+from pydantic import ValidationError
+
 from job_seeker import __version__
 from job_seeker.domain.models import SearchQuery
 from job_seeker.infrastructure.config.profile_loader import MarkdownProfileProvider
+from job_seeker.infrastructure.entrypoints.bounds import describe_bounds_error
 from job_seeker.infrastructure.entrypoints.search import execute_search
 from job_seeker.infrastructure.sources import registry
 from job_seeker.infrastructure.sources.defaults import register_builtins
+
+# How `find_jobs` spells the arguments `SearchQuery` validates. The CLI keeps its own mapping to
+# flags; the two differ on purpose, since an agent passes `limit` where a seeker types `--limit`.
+_FIELD_PARAMS = {
+    "max_results_per_source": "limit",
+    "max_age_days": "max_age_days",
+    "terms": "terms",
+}
 
 if TYPE_CHECKING:
     from mcp.server.fastmcp import FastMCP
@@ -98,11 +109,17 @@ def build_server() -> FastMCP:
         # terms fall back to the profile's; if both are empty the relevance filter simply does not
         # narrow, returning every eligible job. No invented default term, which would be one
         # person's search baked into a reusable engine.
-        query = SearchQuery(
-            terms=terms or profile.search_terms,
-            max_results_per_source=limit,
-            max_age_days=max_age_days,
-        )
+        try:
+            query = SearchQuery(
+                terms=terms or profile.search_terms,
+                max_results_per_source=limit,
+                max_age_days=max_age_days,
+            )
+        except ValidationError as exc:
+            # Re-raised in the agent's own vocabulary. `SearchQuery` rejects
+            # `max_results_per_source`, which is not a parameter this tool exposes, so an agent
+            # reading the raw message cannot tell which argument to change or to what.
+            raise ValueError(describe_bounds_error(exc, _FIELD_PARAMS)) from exc
         result = execute_search(profile, query, sources)
         return result.model_dump(mode="json")
 

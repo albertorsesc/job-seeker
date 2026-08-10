@@ -9,6 +9,7 @@ from __future__ import annotations
 
 from collections.abc import Callable
 from datetime import UTC, datetime, timedelta
+from email.utils import parsedate_to_datetime
 from typing import Any
 
 import httpx
@@ -85,17 +86,41 @@ def get_json(
 def _retry_after_seconds(response: httpx.Response) -> float:
     """Seconds to wait after a 429: the board's Retry-After when sane, always capped.
 
-    Clamped to `_MAX_BACKOFF` so a hostile or buggy header cannot hang a worker. NaN and negative
-    values fall back to the default; `inf` clamps to the ceiling rather than reaching time.sleep.
+    Clamped to `_MAX_BACKOFF` so a hostile or buggy header cannot hang a worker. Anything that is
+    not a readable future instant falls back to the default: absent (the common case, since most
+    boards send a bare 429), malformed, NaN, negative, or a date already past. `inf` clamps to the
+    ceiling rather than reaching time.sleep.
     """
-    header = response.headers.get("retry-after", "")
-    try:
-        seconds = float(header)
-    except ValueError:
-        return _RATE_LIMIT_BACKOFF
-    if seconds != seconds or seconds < 0:  # NaN (self-inequality) or negative
+    seconds = _retry_after_delay(response.headers.get("retry-after", ""))
+    if seconds is None or seconds != seconds or seconds < 0:  # unreadable, NaN, or already past
         return _RATE_LIMIT_BACKOFF
     return min(seconds, _MAX_BACKOFF)
+
+
+def _retry_after_delay(header: str) -> float | None:
+    """Retry-After as seconds from now, in either form RFC 9110 permits, or None if unreadable.
+
+    The spec allows delay-seconds ("120") or an HTTP-date ("Wed, 21 Oct 2015 07:28:00 GMT"), and
+    boards send both. Reading only the number meant a board asking for a real pause was retried on
+    the two-second default instead, which is the impolite direction to be wrong in for a scraper
+    that identifies itself and means it.
+    """
+    header = header.strip()
+    if not header:
+        return None
+    try:
+        return float(header)
+    except ValueError:
+        pass
+    try:
+        when = parsedate_to_datetime(header)
+    except (TypeError, ValueError):
+        return None
+    # An HTTP-date is GMT by definition, but a sloppy one can parse with no zone at all, and
+    # subtracting a naive datetime from an aware one raises.
+    if when.tzinfo is None:
+        when = when.replace(tzinfo=UTC)
+    return (when - datetime.now(UTC)).total_seconds()
 
 
 def clean_html(html: str) -> str:

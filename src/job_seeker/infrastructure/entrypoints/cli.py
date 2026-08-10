@@ -12,13 +12,26 @@ import sys
 from collections.abc import Sequence
 from pathlib import Path
 
+from pydantic import ValidationError
+
 from job_seeker import __version__
-from job_seeker.domain.models import SearchQuery
+from job_seeker.domain.models import SearchQuery, SearchResult
 from job_seeker.infrastructure.config.profile_loader import MarkdownProfileProvider, ProfileError
+from job_seeker.infrastructure.entrypoints.bounds import describe_bounds_error
 from job_seeker.infrastructure.entrypoints.search import execute_search
 from job_seeker.infrastructure.reporting import FORMATS, reporter_for
 from job_seeker.infrastructure.sources import registry
 from job_seeker.infrastructure.sources.defaults import register_builtins
+
+# `SearchQuery` owns the bounds, because the MCP tool accepts the same numbers and the two must
+# not disagree about what is acceptable. So argparse does not re-declare them, and this maps a
+# rejected field back to the flag the seeker typed: "max_results_per_source" is a name they never
+# wrote and cannot act on.
+_FIELD_FLAGS = {
+    "max_results_per_source": "--limit",
+    "max_age_days": "--max-age-days",
+    "terms": "--terms",
+}
 
 
 def _build_parser() -> argparse.ArgumentParser:
@@ -89,15 +102,23 @@ def _find(args: argparse.Namespace) -> int:
         )
         return 2
 
-    query = SearchQuery(
-        terms=terms, max_results_per_source=args.limit, max_age_days=args.max_age_days
-    )
+    try:
+        query = SearchQuery(
+            terms=terms, max_results_per_source=args.limit, max_age_days=args.max_age_days
+        )
+    except ValidationError as exc:
+        print(describe_bounds_error(exc, _FIELD_FLAGS), file=sys.stderr)
+        return 2
+
     source_names = _split(args.sources) or None  # None = every registered source
     try:
         result = execute_search(profile, query, source_names)
     except ValueError as exc:  # unknown source name, or none registered
         print(str(exc), file=sys.stderr)
         return 2
+
+    if not result.is_complete:
+        print(_partial_run_notice(result), file=sys.stderr)
 
     report = reporter_for(args.format).render(result)
     if args.out:
@@ -110,6 +131,26 @@ def _find(args: argparse.Namespace) -> int:
     else:
         print(report)
     return 0
+
+
+def _partial_run_notice(result: SearchResult) -> str:
+    """Why the run did not see everything, on stderr, whatever the format.
+
+    JSON and HTML carry coverage inside the report, but CSV is a flat table of jobs with nowhere to
+    put it, so a board that failed there was a header row and silence. stderr tells the human
+    without contaminating a stdout someone is piping into jq or a spreadsheet.
+    """
+    failed = [c.source for c in result.coverage if c.failed]
+    truncated = [c.source for c in result.coverage if c.truncated and not c.failed]
+    parts = []
+    if failed:
+        parts.append(f"failed: {', '.join(failed)}")
+    if truncated:
+        parts.append(f"scan truncated: {', '.join(truncated)}")
+    # No coverage at all means no source ran, the most incomplete run there is, and the one with
+    # nothing to list. Naming it beats an empty parenthesis.
+    detail = "; ".join(parts) if parts else "no sources ran"
+    return f"Partial run, these results are not the whole picture ({detail})."
 
 
 def _resolve_terms(flag: str | None, from_profile: list[str]) -> list[str]:

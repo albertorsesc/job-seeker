@@ -1,7 +1,8 @@
 """The board registry: the one place the system learns that a job board exists.
 
-This is the open/closed seam. Adding a board is a new adapter plus one `register(...)` call
-here. Nothing in the domain, the application, the CLI or the MCP server changes, because none
+This is the open/closed seam. Adding a board is a new adapter plus one entry in `_BUILTINS` in
+`defaults.py`, which is where the built-in boards are named and where `register` is called from.
+Nothing in the domain, the application, the CLI or the MCP server changes, because none
 of them names a board: they ask the registry for `JobSource`s and talk to the Protocol.
 
 Factories rather than instances, so registration stays free. A board is only constructed when
@@ -31,12 +32,16 @@ exception you have to catch.
 # makes the duplicate-name check possible.
 #
 # **Concurrency invariant: all registration happens single-threaded, before any concurrent read.**
-# The composition root (the CLI and MCP entrypoints) calls `register_builtins` once at startup,
-# on the main thread, before the orchestrator fans `create_all()` out across a ThreadPoolExecutor.
-# So `_FACTORIES` is quiescent during concurrent reads and needs no lock. This holds by
-# construction, not by an import lock: a plugin or a self-registering source that wrote to
-# `_FACTORIES` from a worker thread would break it, making `sorted(_FACTORIES)` liable to
-# "dictionary changed size during iteration". Register at startup, never from a worker.
+# `cli.main` and `mcp_server.build_server` each call `register_builtins` once, on the main thread,
+# before their process can service a request. This dict is read-only afterwards, and the reads are
+# on the main thread too: `create` builds every source before the orchestrator exists, and the
+# orchestrator receives those instances by injection, so its ThreadPoolExecutor never touches
+# this dict. There is no concurrent reader, which is why there is no lock.
+#
+# The threat is a concurrent *writer*, not a reader. A plugin loader, a self-registering source,
+# or any registration reached from a worker thread breaks the invariant: two threads can both pass
+# the `name in known` check in `register_builtins` and the loser gets a spurious ValueError from
+# `register`. Register at startup, on the main thread, never from a worker.
 _FACTORIES: dict[str, SourceFactory] = {}
 
 

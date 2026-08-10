@@ -36,6 +36,48 @@ async def _structured(server: FastMCP, tool: str) -> dict[str, Any]:
     return cast(tuple[Any, dict[str, Any]], result)[1]
 
 
+def _write_profile(tmp_path: Path) -> Path:
+    path = tmp_path / "p.md"
+    path.write_text(
+        "---\nlocation:\n  country: Testland\nsearch_terms: [Engineer]\n"
+        "skills:\n  '\\bpython\\b': 3\n---\n"
+    )
+    return path
+
+
+class TestFindJobsRejectsOutOfRangeArgumentsInTheAgentsOwnWords:
+    """The agent writes `limit`; the model rejects `max_results_per_source`.
+
+    An agent handed "max_results_per_source: Input should be less than or equal to 1000" cannot act
+    on it: that is not a parameter it passed, and `find_jobs` does not expose one by that name. The
+    CLI already translates its rejections back to `--limit`; the MCP surface is the public contract
+    for agents and must not be the worse-served of the two.
+    """
+
+    @pytest.mark.parametrize(
+        "arguments,expected",
+        [
+            pytest.param({"limit": 100000}, "limit", id="limit-above-maximum"),
+            pytest.param({"limit": 0}, "limit", id="limit-below-minimum"),
+            pytest.param({"max_age_days": 0}, "max_age_days", id="max-age-days-below-minimum"),
+        ],
+    )
+    async def test_the_message_names_the_tool_parameter(
+        self,
+        arguments: dict[str, Any],
+        expected: str,
+        tmp_path: Path,
+        monkeypatch: pytest.MonkeyPatch,
+    ) -> None:
+        monkeypatch.setenv("JOB_SEEKER_PROFILE", str(_write_profile(tmp_path)))
+        server = mcp_server.build_server()
+        with pytest.raises(Exception) as caught:
+            await server.call_tool("find_jobs", {"terms": ["engineer"], **arguments})
+        message = str(caught.value)
+        assert expected in message
+        assert "max_results_per_source" not in message or expected == "max_results_per_source"
+
+
 class TestBuildServer:
     def test_builds_a_server_named_for_the_project(self) -> None:
         assert mcp_server.build_server().name == "job-seeker"
@@ -132,6 +174,22 @@ class TestFindJobsTool:
         payload = await _structured(mcp_server.build_server(), "find_jobs")
         assert payload["jobs"][0]["job"]["title"] == "Python Engineer"
         assert payload["jobs"][0]["eligibility"]["status"] == "global"
+
+
+class TestMainWithoutTheOptionalExtra:
+    """`main()` cannot be tested past `run()`, which blocks on stdio forever. The branch before it
+    can, and it is the one a user without the `mcp` extra actually hits."""
+
+    def test_it_explains_how_to_install_the_extra_instead_of_tracebacking(
+        self, capsys: pytest.CaptureFixture[str], monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        # Patch the real `importlib.util`, not `mcp_server.importlib`: the module imports it
+        # rather than re-exporting it, so reaching it through the module is a mypy-strict error.
+        monkeypatch.setattr("importlib.util.find_spec", lambda name: None)
+        assert mcp_server.main() == 2
+        err = capsys.readouterr().err
+        assert "mcp" in err
+        assert "pip install" in err
 
 
 class TestTheSdkImportStaysLazy:

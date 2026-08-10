@@ -49,6 +49,18 @@ class UnavailableSource:
         return SourceResult(source="jobspy", error="python-jobspy is not installed")
 
 
+class ConstantNameSource:
+    """A board whose name is a constant, the shape every adapter that ships here uses."""
+
+    name = "himalayas"
+
+    def is_available(self) -> bool:
+        return True
+
+    def fetch(self, query: SearchQuery, /) -> SourceResult:
+        return SourceResult(source=ConstantNameSource.name)
+
+
 class StaticProfileProvider:
     def load(self) -> Profile:
         return Profile(name="Test Seeker")
@@ -98,6 +110,35 @@ class TestStructuralConformance:
         assert result.jobs == [job]
         assert result.scanned == 1
         assert not result.failed
+
+
+class TestBothNameShapesConform:
+    """`JobSource.name` is a read-only property on the port, which admits two implementations.
+
+    That both exist in this repo is deliberate, not drift. A shipped adapter writes
+    `name = "himalayas"` because the name is a constant, is the registry key, and is read off the
+    class before any instance exists. A fake writes a property because its name is a constructor
+    argument. Declaring `name: str` on the port instead would demand a settable attribute and
+    reject every fake in this file, so "make them consistent" is a change that only looks tidy.
+
+    These pin the permissiveness. Without them the port could be narrowed to `name: str` and the
+    only signal would be fakes failing, which reads as the fakes being wrong.
+    """
+
+    def test_a_constant_class_attribute_satisfies_the_port(self) -> None:
+        assert _accepts_source(ConstantNameSource()) == "himalayas"
+
+    def test_an_instance_property_satisfies_the_port(self) -> None:
+        assert _accepts_source(InMemorySource("remoteok")) == "remoteok"
+
+    def test_a_constant_name_is_readable_on_the_class_itself(self) -> None:
+        """Why a shipped adapter uses the constant form.
+
+        `_normalize` is a module-level function that builds `Job.source` from `TheSource.name`
+        (himalayas.py:138, remoteok.py:90) with no instance in hand. A property there evaluates to
+        the descriptor object, not a string, and pydantic rejects it.
+        """
+        assert ConstantNameSource.name == "himalayas"
 
 
 class TestUnavailableSourceReportsRatherThanRaises:

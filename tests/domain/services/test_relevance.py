@@ -12,6 +12,7 @@ from collections.abc import Callable
 
 from job_seeker.domain.models import Job
 from job_seeker.domain.profile import Profile
+from job_seeker.domain.services import relevance
 from job_seeker.domain.services.relevance import RelevanceFilter
 
 
@@ -62,6 +63,19 @@ class TestExclusions:
         profile = Profile(role_exclude=["sales"])
         assert not _relevant(make_job(title="Sales Engineer"), ["engineer"], profile)
 
+    def test_a_job_that_trips_none_of_the_false_positive_terms_is_kept(
+        self, make_job: Callable[..., Job]
+    ) -> None:
+        """The ordinary case for a profile that sets these, and the one that was never exercised.
+
+        Every other false-positive test uses a job that matches, so the fall-through, where the
+        rule is configured and simply does not fire, went untested. A filter that dropped
+        everything once these were set would have passed the whole suite.
+        """
+        profile = Profile(false_positive_terms=["support agent", "booking agent"])
+        job = make_job(title="AI Engineer", description="Build retrieval pipelines.")
+        assert _relevant(job, ["engineer"], profile)
+
 
 class TestAssessAll:
     def test_pairs_every_job_with_a_verdict_in_order(self, make_job: Callable[..., Job]) -> None:
@@ -78,6 +92,43 @@ class TestAssessAll:
             ("Aluminum Director", False),
             ("ML Engineer", True),
         ]
+
+
+class TestThePatternCacheIsBounded:
+    """Compiled patterns are cached in a process global, keyed by word.
+
+    On the MCP path those words come from the agent's `terms`, and the server is long-lived, so an
+    unbounded cache grows for the life of the process: 5,000 distinct terms held 5,000 patterns.
+    The cache is worth keeping (a pattern is recompiled per job otherwise), so it is bounded rather
+    than removed.
+    """
+
+    def test_it_stops_growing_at_its_ceiling(self, make_job: Callable[..., Job]) -> None:
+        relevance._pattern.cache_clear()
+        filter_ = RelevanceFilter(Profile())
+        job = make_job(title="AI Engineer")
+        for index in range(relevance._PATTERN_CACHE_SIZE + 100):
+            filter_.assess(job, [f"agentterm{index}"])
+        assert relevance._pattern.cache_info().currsize <= relevance._PATTERN_CACHE_SIZE
+
+    def test_a_verdict_survives_the_eviction_of_its_own_pattern(
+        self, make_job: Callable[..., Job]
+    ) -> None:
+        """The cache is an optimization, so evicting an entry must not change an answer.
+
+        Without this, a bound could be "met" by a cache that quietly stopped matching once full.
+        """
+        filter_ = RelevanceFilter(Profile())
+        job = make_job(title="Senior Engineer")
+        before = filter_.assess(job, ["engineer"])
+
+        relevance._pattern.cache_clear()
+        for index in range(relevance._PATTERN_CACHE_SIZE + 100):
+            filter_.assess(job, [f"filler{index}"])
+
+        after = filter_.assess(job, ["engineer"])
+        assert (after.keep, after.reason) == (before.keep, before.reason)
+        assert after.keep
 
 
 class TestReasonIsRecorded:

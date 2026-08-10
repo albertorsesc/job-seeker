@@ -19,12 +19,17 @@ A domain service, pure reasoning over a Job. It narrows by two profile-driven si
 from __future__ import annotations
 
 import re
+from functools import lru_cache
 
 from job_seeker.domain.models import Job, Relevance
 from job_seeker.domain.profile import Profile
 
 _WORD_SPLIT = re.compile(r"[^\w]+")
-_WORD_CACHE: dict[str, re.Pattern[str]] = {}
+# The pattern cache is bounded because its keys are not all the seeker's own. A profile's role
+# words are a fixed handful, but the query's `terms` reach here from an MCP agent, and that server
+# runs for as long as the session does, so an unbounded cache holds every word ever searched. The
+# ceiling sits far above a profile's vocabulary plus a session's searches, so nothing real evicts.
+_PATTERN_CACHE_SIZE = 1024
 
 
 class RelevanceFilter:
@@ -88,8 +93,11 @@ def _first_hit(words: list[str], text: str) -> str | None:
     return next((word for word in words if _word_in(word, text)), None)
 
 
+@lru_cache(maxsize=_PATTERN_CACHE_SIZE)
+def _pattern(word: str) -> re.Pattern[str]:
+    """The compiled whole-word matcher for one word. Cached: it is rebuilt per job otherwise."""
+    return re.compile(rf"\b{re.escape(word)}\b")
+
+
 def _word_in(word: str, text: str) -> bool:
-    pattern = _WORD_CACHE.get(word)
-    if pattern is None:
-        pattern = _WORD_CACHE[word] = re.compile(rf"\b{re.escape(word)}\b")
-    return pattern.search(text) is not None
+    return _pattern(word).search(text) is not None

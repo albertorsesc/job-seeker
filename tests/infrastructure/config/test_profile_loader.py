@@ -38,6 +38,50 @@ def _write(tmp_path: Path, text: str) -> Path:
     return path
 
 
+class TestTheMistakesPeopleActuallyMakeInHandWrittenYaml:
+    """Each of these has a carefully worded error message that had never been produced.
+
+    The profile is hand-authored YAML, so these are not exotic: they are what a first attempt at
+    filling in the template looks like when it goes wrong. A ProfileError naming the file and the
+    problem is the whole reason the loader validates at the boundary.
+    """
+
+    def test_front_matter_with_no_closing_fence(self, tmp_path: Path) -> None:
+        """Opening `---` and never closing it: the block is unterminated, so there is nothing to
+        parse, and it must not be mistaken for a file with no front matter at all."""
+        provider = MarkdownProfileProvider(_write(tmp_path, "---\nname: Jane\n"))
+        with pytest.raises(ProfileError, match="front matter"):
+            provider.load()
+
+    def test_empty_front_matter_loads_the_defaults(self, tmp_path: Path) -> None:
+        """`---\\n---` is well-formed and says nothing. That is a profile with every default, not
+        an error: the loader's job is to reject what it cannot understand, not what is sparse."""
+        profile = MarkdownProfileProvider(_write(tmp_path, "---\n---\n")).load()
+        assert profile.name == "Anonymous"
+        assert profile.skills == {}
+
+    def test_front_matter_that_is_a_list_not_a_mapping(self, tmp_path: Path) -> None:
+        """A common slip: writing the fields as a YAML list. Valid YAML, wrong shape."""
+        provider = MarkdownProfileProvider(
+            _write(tmp_path, "---\n- name: Jane\n- skills: {}\n---\n")
+        )
+        with pytest.raises(ProfileError, match="mapping"):
+            provider.load()
+
+    def test_front_matter_that_is_a_bare_scalar(self, tmp_path: Path) -> None:
+        provider = MarkdownProfileProvider(_write(tmp_path, "---\njust a string\n---\n"))
+        with pytest.raises(ProfileError, match="mapping"):
+            provider.load()
+
+    def test_a_directory_where_a_file_was_expected_is_a_clear_error(self, tmp_path: Path) -> None:
+        """An OSError that is not FileNotFoundError. `--profile ~/profiles` (the directory rather
+        than the file in it) is the realistic way to hit this, and it must not traceback."""
+        directory = tmp_path / "profiles"
+        directory.mkdir()
+        with pytest.raises(ProfileError, match="[Cc]ould not read|not found"):
+            MarkdownProfileProvider(directory).load()
+
+
 class TestLoadingAValidProfile:
     def test_parses_the_front_matter_into_a_profile(self, tmp_path: Path) -> None:
         profile = MarkdownProfileProvider(_write(tmp_path, _VALID)).load()

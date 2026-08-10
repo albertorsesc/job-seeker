@@ -16,3 +16,10 @@ test:
 	$(BIN)/ruff format .
 	$(BIN)/mypy
 	$(BIN)/pytest
+
+# Deliberately not part of `test`. The gate runs in under a second, and that speed is why it gets
+# run before every commit; instrumenting every line would trade the habit for a number. Run this
+# when changing what the tests reach, not on every edit.
+.PHONY: coverage
+coverage:
+	$(BIN)/pytest --cov --cov-report=term-missing

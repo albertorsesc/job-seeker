@@ -91,6 +91,25 @@ class TestNormalization:
         job = _fetch([_record(companyName="Acme Labs, Inc.")]).jobs[0]
         assert job.company == "Acme Labs, Inc."
 
+    def test_a_minimum_only_salary_renders_as_a_single_figure(self) -> None:
+        """A floor with no ceiling is ordinary board data and must not render against a phantom
+        zero, nor as "USD 120,000 - 0"."""
+        job = _fetch([_record(minSalary=120000, maxSalary=None)]).jobs[0]
+        assert job.salary == "USD 120,000"
+
+    def test_a_maximum_only_salary_renders_as_a_single_figure(self) -> None:
+        job = _fetch([_record(minSalary=None, maxSalary=160000)]).jobs[0]
+        assert job.salary == "USD 160,000"
+
+    def test_an_equal_min_and_max_renders_once_not_as_a_range(self) -> None:
+        job = _fetch([_record(minSalary=150000, maxSalary=150000)]).jobs[0]
+        assert job.salary == "USD 150,000"
+
+    def test_a_salary_with_no_currency_still_renders(self) -> None:
+        """`currency` is stripped and joined, so a missing one must not leave a leading space."""
+        job = _fetch([_record(minSalary=150000, maxSalary=150000, currency="")]).jobs[0]
+        assert job.salary == "150,000"
+
     def test_structured_restrictions_become_hints(self) -> None:
         job = _fetch([_record()]).jobs[0]
         assert job.hints.location_restrictions == ("United States",)

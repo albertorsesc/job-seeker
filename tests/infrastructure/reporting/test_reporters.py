@@ -146,6 +146,52 @@ class TestHtmlReporter:
         assert "javascript:alert" not in html or "&" in html  # if shown, only as escaped text
 
 
+class TestAZeroFitJobRenders:
+    """A job can match the search and score nothing: relevance and fit are separate stages.
+
+    A live run produced exactly this ("Chief Engineer", fit 0.0), so the empty-breakdown path is
+    ordinary output, not an edge case. It had never been rendered in a test.
+    """
+
+    @staticmethod
+    def _zero_fit() -> SearchResult:
+        return SearchResult(
+            query=SearchQuery(terms=["Engineer"]),
+            jobs=[
+                ScoredJob(
+                    job=Job(
+                        title="Chief Engineer",
+                        company="Svitzer",
+                        url="https://example.com/j/1",
+                        source="remoteok",
+                    ),
+                    fit=FitScore(value=0.0, raw=0, matched={}),
+                    relevance=Relevance(keep=True, reason="title matches 'engineer'"),
+                    eligibility=Eligibility(
+                        status=EligibilityStatus.REMOTE_UNVERIFIED,
+                        reason="remote, but eligibility could not be confirmed",
+                    ),
+                )
+            ],
+            coverage=[SourceCoverage(source="remoteok", scanned=100, kept=1)],
+        )
+
+    def test_html_omits_the_breakdown_rather_than_printing_an_empty_one(self) -> None:
+        html = HtmlReporter().render(self._zero_fit())
+        assert "Chief Engineer" in html
+        assert "fit 0%" in html
+        assert 'class="matched"' not in html  # no empty breakdown paragraph
+
+    def test_csv_writes_an_empty_matched_cell(self) -> None:
+        rows = list(csv.DictReader(io.StringIO(CsvReporter().render(self._zero_fit()))))
+        assert rows[0]["title"] == "Chief Engineer"
+        assert rows[0]["matched"] == ""
+
+    def test_json_keeps_the_empty_map_rather_than_dropping_the_field(self) -> None:
+        payload = json.loads(JsonReporter().render(self._zero_fit()))
+        assert payload["jobs"][0]["fit"]["matched"] == {}
+
+
 class TestReporterFactory:
     def test_resolves_each_format_name(self) -> None:
         assert isinstance(reporter_for("json"), JsonReporter)

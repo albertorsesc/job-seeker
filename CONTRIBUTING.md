@@ -57,6 +57,11 @@ from job_seeker.infrastructure.sources import base
 
 
 class YourBoardSource:
+    # A plain class attribute, not a @property. The port declares `name` as a read-only property,
+    # which both shapes satisfy, but an adapter's name is a constant and is read off the class
+    # (`YourBoardSource.name`) by the module-level `_normalize` below, before any instance exists.
+    # A @property evaluates to the descriptor object there, and pydantic rejects it as a
+    # non-string. `tests/.../test_source_contract.py` holds every shipped adapter to this.
     name = "yourboard"  # the stable identifier used to select and report on the source
 
     def is_available(self) -> bool:
