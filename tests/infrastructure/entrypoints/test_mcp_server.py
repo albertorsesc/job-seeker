@@ -131,7 +131,12 @@ class TestBuildServer:
 
     async def test_exposes_the_tools_an_agent_needs(self) -> None:
         tools = await mcp_server.build_server().list_tools()
-        assert {tool.name for tool in tools} == {"list_sources", "describe_engine", "find_jobs"}
+        assert {tool.name for tool in tools} == {
+            "list_sources",
+            "describe_engine",
+            "describe_profile",
+            "find_jobs",
+        }
 
     async def test_every_tool_carries_a_description_for_the_agent(self) -> None:
         """The docstring is the agent's only signal about when to call a tool."""
@@ -212,6 +217,48 @@ class TestDescribeEngineTool:
         payload = await _structured(mcp_server.build_server(), "describe_engine")
         assert payload["can_search"] is False
         assert payload["profile_problem"]
+
+
+class TestDescribeProfileTool:
+    """Every verdict is a function of the profile, so an agent must be able to say whose it is.
+
+    A misconfigured profile does not error. It answers confidently for the wrong person, and
+    without this tool neither the agent nor the seeker can see that before acting on the results.
+    """
+
+    async def test_reports_who_the_engine_is_searching_as(
+        self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        profile = tmp_path / "p.md"
+        profile.write_text(
+            "---\nname: Jane Doe\nheadline: Backend Engineer\n"
+            "location:\n  country: Portugal\n  timezone_utc_offset: 0\n"
+            "eligibility:\n  eligible_regions: [portugal, europe]\n"
+            "search_terms: [Backend Engineer]\nskills:\n  '\\bpython\\b': 3\n---\n"
+        )
+        monkeypatch.setenv("JOB_SEEKER_PROFILE", str(profile))
+        payload = await _structured(mcp_server.build_server(), "describe_profile")
+        assert payload["name"] == "Jane Doe"
+        assert payload["country"] == "Portugal"
+        assert payload["default_search_terms"] == ["Backend Engineer"]
+
+    async def test_it_exposes_the_eligibility_rules_that_decide_every_verdict(
+        self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        """The rules a seeker most needs to check, because getting them wrong surfaces jobs they
+        cannot legally hold, which is the one failure this product exists to prevent."""
+        profile = tmp_path / "p.md"
+        profile.write_text(
+            "---\nlocation:\n  country: Mexico\n"
+            "eligibility:\n  eligible_regions: [mexico, latam]\n"
+            "  disqualifying_authorization_terms: [us citizen]\n"
+            "  max_timezone_distance_hours: 3\n---\n"
+        )
+        monkeypatch.setenv("JOB_SEEKER_PROFILE", str(profile))
+        payload = await _structured(mcp_server.build_server(), "describe_profile")
+        assert payload["eligible_regions"] == ["mexico", "latam"]
+        assert payload["disqualifying_authorization_terms"] == ["us citizen"]
+        assert payload["max_timezone_distance_hours"] == 3
 
 
 class TestFindJobsTool:

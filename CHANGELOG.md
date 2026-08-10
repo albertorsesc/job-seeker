@@ -54,11 +54,19 @@ Pre-1.0 and not yet depended on, so these breaks are taken now rather than carri
   boards that failed, or a quieter line when a scan was merely capped. JSON and HTML carry coverage
   in the report, but CSV is a flat table of jobs with nowhere to put it, so a failed board there was
   a header row and silence.
+- `describe_profile`, an MCP tool reporting who the engine is searching as. Every verdict is a
+  function of the profile, and a misconfigured one does not error, it answers confidently for the
+  wrong person; an agent can now state whose profile it used before reporting results.
 - `describe_engine` checks whether a profile is loadable instead of reporting `can_search: true`
   unconditionally, and returns the reason when it is not.
 
 ### Fixed
 
+- The MCP payload no longer floods an agent's context. Job descriptions are trimmed to 600
+  characters with the full posting a fetch away at `job.url`. A broad live search cost roughly
+  29,000 tokens, 82% of it descriptions, and the SDK sends the payload twice; the same search is
+  now about 7,200. Trimming happens at the tool boundary, so scoring and eligibility still read
+  the full text.
 - Cross-board dedup no longer discards data. The freshest posting is still the representative, but
   a field it lacks is filled from its siblings, so a copy posted an hour later with no salary no
   longer takes a published salary with it.

@@ -98,6 +98,38 @@ def build_server() -> FastMCP:
         }
 
     @server.tool()
+    def describe_profile() -> dict[str, Any]:
+        """Report who the engine is searching as, so the seeker can check it before trusting a run.
+
+        Every verdict this engine produces is a function of the profile: which roles count as
+        relevant, which skills earn fit, and above all which postings the seeker is eligible to
+        hold. A misconfigured profile does not error, it quietly answers for the wrong person, so
+        state who that is before reporting results the seeker is meant to act on.
+
+        Read `eligible_regions` back to the seeker when eligibility matters. A region here is an
+        authorization claim, not geography: listing "americas" includes the United States, so a
+        seeker without US work authorization would see US-only roles reported as holdable.
+        """
+        profile = MarkdownProfileProvider.from_env().load()
+        rules = profile.eligibility
+        return {
+            "name": profile.name,
+            "headline": profile.headline,
+            "seniority": profile.seniority,
+            "country": profile.location.country,
+            "timezone_utc_offset": profile.location.timezone_utc_offset,
+            "default_search_terms": profile.search_terms,
+            "skills_weighted": profile.skills,
+            "roles_wanted": profile.role_include,
+            "roles_excluded": profile.role_exclude,
+            "eligible_regions": rules.eligible_regions,
+            "disqualifying_authorization_terms": rules.disqualifying_authorization_terms,
+            "location_lock_terms": rules.location_lock_terms,
+            "max_timezone_distance_hours": rules.max_timezone_distance_hours,
+            "includes_unverified_postings": rules.include_unverified,
+        }
+
+    @server.tool()
     def find_jobs(
         terms: list[str] | None = None,
         scan_depth: int = 50,
@@ -110,9 +142,20 @@ def build_server() -> FastMCP:
         The seeker's profile is read from the JOB_SEEKER_PROFILE environment variable; it is the
         profile, not the caller, that decides what "suitable" means. `terms` overrides the
         profile's default search terms. Each result carries a fit score and an eligibility verdict
-        with a reason. The `coverage` and `is_complete` fields say how much of each board was
-        scanned, so a partial run (a board down, a scan truncated) is never mistaken for a
-        thorough one.
+        with a reason. Read `all_sources_ran` before reporting results: when it is false a board
+        failed and whole categories of job are missing. `fully_scanned` is false whenever a board
+        was read only to `scan_depth`, which is the ordinary case.
+
+        `scan_depth` is how many postings to READ per board, not how many to return. Raising it
+        widens the pool the answer is chosen from; use `max_results` to shorten the answer, which
+        is applied after ranking so it keeps the best.
+
+        To compare pay, use `salary.annual_minimum`/`annual_maximum`, never the raw figures: boards
+        quote hourly and annual pay in the same field. Those annual figures are null when the board
+        did not say what period it meant, which is common, so a question like "which pay over 150k"
+        must say how many postings it could not judge rather than silently dropping them.
+
+        Job descriptions are truncated in this payload; the full posting is at `job.url`.
         """
         profile = MarkdownProfileProvider.from_env().load()
         # terms fall back to the profile's; if both are empty the relevance filter simply does not
@@ -130,9 +173,51 @@ def build_server() -> FastMCP:
             # `max_results_per_source`, which is not a parameter this tool exposes, so an agent
             # reading the raw message cannot tell which argument to change or to what.
             raise ValueError(describe_bounds_error(exc, _FIELD_PARAMS)) from exc
-        return execute_search(profile, query, sources)
+        return _fit_for_context(execute_search(profile, query, sources))
 
     return server
+
+
+# How much of a job description survives into an agent's context window.
+#
+# Measured, not guessed: a broad live search returned 11 postings as 58 KB, of which 48 KB was
+# descriptions, and the MCP SDK sends the payload twice (once as text for the model, once as
+# structured content), so that search cost roughly 29,000 tokens. Descriptions are what the engine
+# reasons over, and it has already done that by the time this runs: scoring, eligibility and
+# relevance all read the full text upstream. What reaches the agent only has to be enough to
+# recognise the role, and the whole posting is one fetch away at `job.url`.
+_DESCRIPTION_BUDGET = 600
+
+
+def _fit_for_context(result: SearchResult) -> SearchResult:
+    """The finished result with descriptions trimmed for an agent's context window.
+
+    Trimming here, at the driving adapter, rather than in the pipeline: the full description is
+    what the scorer and the eligibility classifier read, so shortening it upstream would change
+    which jobs are found. This changes only what is reported.
+    """
+    return result.model_copy(
+        update={
+            "jobs": [
+                scored.model_copy(
+                    update={
+                        "job": scored.job.model_copy(
+                            update={"description": _trim(scored.job.description)}
+                        )
+                    }
+                )
+                for scored in result.jobs
+            ]
+        }
+    )
+
+
+def _trim(description: str) -> str:
+    """Cut to the budget on a word boundary, saying so, or return it unchanged if it already fits."""
+    if len(description) <= _DESCRIPTION_BUDGET:
+        return description
+    cut = description[:_DESCRIPTION_BUDGET].rsplit(" ", 1)[0]
+    return f"{cut} [truncated, full posting at the job url]"
 
 
 def _profile_problem() -> str | None:
