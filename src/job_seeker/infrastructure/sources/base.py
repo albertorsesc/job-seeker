@@ -1,7 +1,7 @@
 """Shared HTTP and normalization helpers for source adapters.
 
-This is the only place in the sources package that knows about HTTP and HTML. An adapter uses
-these to fetch and clean, then spends its own code on the one thing it cannot share: turning a
+This is the only place in the sources package that knows about HTTP, HTML and XML. An adapter
+uses these to fetch and clean, then spends its own code on the one thing it cannot share: turning a
 board's particular payload into canonical `Job`s.
 """
 
@@ -14,14 +14,14 @@ from email.utils import parsedate_to_datetime
 from typing import Any
 
 import httpx
-from bs4 import BeautifulSoup
+from bs4 import BeautifulSoup, Tag
 
 from job_seeker import __version__
 from job_seeker.domain.models import CurrencySource, SalaryPeriod, SalaryRange
 
 USER_AGENT = f"job-seeker/{__version__} (+https://github.com/albertorsesc/job-seeker)"
 
-# Connection errors get one transport-level retry; HTTP 429 is handled in get_json, because a
+# Connection errors get one transport-level retry; HTTP 429 is handled in `_get`, because a
 # rate-limit is a response, not a connection failure, and it carries a Retry-After to honor.
 _DEFAULT_TIMEOUT = 15.0
 _CONNECT_RETRIES = 1
@@ -43,20 +43,25 @@ def build_client(timeout: float = _DEFAULT_TIMEOUT) -> httpx.Client:
     )
 
 
-def get_json(
+def _get(
     client: httpx.Client,
     url: str,
     *,
     params: dict[str, Any] | None = None,
-    max_retries: int = 2,
-    sleep: Callable[[float], None] | None = None,
-) -> Any:
-    """GET and parse JSON, backing off and retrying on HTTP 429 only.
+    max_retries: int,
+    sleep: Callable[[float], None] | None,
+) -> httpx.Response:
+    """GET a successful response, backing off and retrying on HTTP 429 only.
 
-    A 429 is the board asking us to slow down, so it is retried after its Retry-After (or a
-    default backoff). Every other error status raises `HTTPStatusError`: the adapter catches it
-    and reports the failure in its `SourceResult`, because one board failing must not abort a run
-    across the others. `sleep` is injectable so tests do not actually wait.
+    The politeness, with no opinion about what the body contains. A 429 is the board asking us to
+    slow down, so it is retried after its Retry-After (or a default backoff). Every other error
+    status raises `HTTPStatusError`: the adapter catches it and reports the failure in its
+    `SourceResult`, because one board failing must not abort a run across the others. `sleep` is
+    injectable so tests do not actually wait.
+
+    Separate from the decoders because a board's transport and its payload format are independent:
+    the RSS boards need this exact backoff and parse XML, and welding it into `get_json` meant the
+    first of them would either copy the retry loop or grow a second one beside it.
     """
     if sleep is None:
         import time
@@ -71,18 +76,70 @@ def get_json(
             attempt += 1
             continue
         response.raise_for_status()
-        try:
-            return response.json()
-        except ValueError as exc:
-            # A 200 with a non-JSON body: a Cloudflare challenge, a maintenance page, a
-            # truncated response. json() raises JSONDecodeError, a ValueError disjoint from
-            # httpx.HTTPError, so it would escape an adapter's error handling and violate the
-            # never-raise contract. Re-raise as DecodingError (an HTTPError) so the adapter's
-            # existing catch turns it into a reported failure, for this adapter and every future
-            # one.
-            raise httpx.DecodingError(
-                f"non-JSON response from {url}", request=response.request
-            ) from exc
+        return response
+
+
+def get_json(
+    client: httpx.Client,
+    url: str,
+    *,
+    params: dict[str, Any] | None = None,
+    max_retries: int = 2,
+    sleep: Callable[[float], None] | None = None,
+) -> Any:
+    """GET and parse JSON. See `_get` for the retry behaviour."""
+    response = _get(client, url, params=params, max_retries=max_retries, sleep=sleep)
+    try:
+        return response.json()
+    except ValueError as exc:
+        # A 200 with a non-JSON body: a Cloudflare challenge, a maintenance page, a truncated
+        # response. json() raises JSONDecodeError, a ValueError disjoint from httpx.HTTPError, so
+        # it would escape an adapter's error handling and violate the never-raise contract.
+        # Re-raise as DecodingError (an HTTPError) so the adapter's existing catch turns it into a
+        # reported failure, for this adapter and every future one.
+        raise httpx.DecodingError(
+            f"non-JSON response from {url}", request=response.request
+        ) from exc
+
+
+def get_xml(
+    client: httpx.Client,
+    url: str,
+    *,
+    params: dict[str, Any] | None = None,
+    max_retries: int = 2,
+    sleep: Callable[[float], None] | None = None,
+) -> BeautifulSoup:
+    """GET and parse an XML document, such as an RSS feed. See `_get` for the retry behaviour.
+
+    Parsed from `.content` rather than `.text`: an XML declaration names its own encoding, and
+    handing the parser bytes lets it honor that instead of second-guessing httpx's charset.
+
+    The empty-document check is what makes this as safe as `get_json`. Where `json()` raises on a
+    Cloudflare challenge page, the XML parser accepts one and returns a soup with no elements in
+    it, so the adapter would report a clean run that found no jobs. Same failure, same
+    `DecodingError`, so the same `except httpx.HTTPError` in the adapter reports it.
+    """
+    response = _get(client, url, params=params, max_retries=max_retries, sleep=sleep)
+    document = BeautifulSoup(response.content, "xml")
+    if document.find() is None:
+        raise httpx.DecodingError(f"non-XML response from {url}", request=response.request)
+    return document
+
+
+def element_text(node: Tag, name: str) -> str:
+    """The stripped text of one child element, or "" when the document does not carry it.
+
+    `find` returns `Tag | NavigableString | None`, so reading a field straight would be three lines
+    of narrowing at every use, in adapters whose job is a board's dialect rather than bs4's type
+    surface.
+
+    Missing and empty both give "". A feed omits a field and emits it blank interchangeably, and
+    where that distinction carries meaning it is the adapter that knows it: it reads the "" and
+    says what its own board means by it.
+    """
+    found = node.find(name)
+    return found.get_text().strip() if isinstance(found, Tag) else ""
 
 
 def _retry_after_seconds(response: httpx.Response) -> float:
@@ -114,15 +171,30 @@ def _retry_after_delay(header: str) -> float | None:
         return float(header)
     except ValueError:
         pass
+    when = to_utc_from_email_date(header)
+    if when is None:
+        return None
+    return (when - datetime.now(UTC)).total_seconds()
+
+
+def to_utc_from_email_date(value: str | None) -> datetime | None:
+    """An RFC 2822 date as an aware UTC datetime, or None if it is absent or unreadable.
+
+    One format, two callers, because two specifications point at the same grammar: an RSS
+    `pubDate` and an HTTP `Retry-After` date are both "Tue, 11 Aug 2026 16:03:20 +0000".
+
+    Aware, always. The zone is part of the format, but a sloppy sender can emit one without it,
+    and a naive datetime compared against an aware `now` raises during age filtering, taking a
+    whole run with it. An unreadable value is None rather than an exception, so one malformed
+    record cannot cost a page of good ones.
+    """
+    if not value or not value.strip():
+        return None
     try:
-        when = parsedate_to_datetime(header)
+        when = parsedate_to_datetime(value.strip())
     except (TypeError, ValueError):
         return None
-    # An HTTP-date is GMT by definition, but a sloppy one can parse with no zone at all, and
-    # subtracting a naive datetime from an aware one raises.
-    if when.tzinfo is None:
-        when = when.replace(tzinfo=UTC)
-    return (when - datetime.now(UTC)).total_seconds()
+    return when if when.tzinfo is not None else when.replace(tzinfo=UTC)
 
 
 def salary_from_bounds(
