@@ -89,6 +89,8 @@ job-seeker find --scan-depth 300 --max-results 10 --format html --out report.htm
 | `--scan-depth` | how many postings to **read** per board (default 50). Widens the pool an answer is chosen from |
 | `--max-results` | how many ranked results to **return**. Applied after ranking, so it keeps the best |
 | `--max-age-days` | ignore postings older than this (default 30) |
+| `--stated-only` | only postings a board affirmatively cleared, dropping `remote-verify` |
+| `--sort` | `fit` (default) or `confidence`, which puts everything a board cleared above everything nobody did |
 | `--sources` | restrict to named boards. A typo is refused rather than silently searching fewer |
 | `--format` | `html` (default), `json`, or `csv` |
 | `--out` | write to a file instead of stdout |
@@ -96,6 +98,26 @@ job-seeker find --scan-depth 300 --max-results 10 --format html --out report.htm
 `--scan-depth` and `--max-results` are deliberately separate. Reading more postings costs time and
 politeness; returning fewer costs nothing. Asking for a short list by scanning less would hand you
 the first few postings found rather than the best ones.
+
+### "US job, but open to remote"
+
+That is not a special case. The engine never asks whose company it is, only what the posting says
+about who may hold the role. A US company that opens a role to Mexico or worldwide comes back
+`home-based` or `global`; one that does not comes back excluded.
+
+The `eligibility.status` is the confidence signal:
+
+- `home-based`, `regional`, `global` mean **the board stated it**. Apply.
+- `remote-verify` means nobody said. A lead worth checking, not a fact.
+
+Measured against 800 live Himalayas postings: 63% are tagged United States only, and 16% of those
+actively demand US citizenship, a green card or a clearance. Only 2% contain any "open to anywhere"
+phrase, and on inspection those are perks blurbs rather than hiring policy. Postings tagged for the
+US plus other countries list Canada, the UK, Australia, India and Germany, and never Mexico or
+LATAM. So the tag is trustworthy to exclude on. What you want, roughly 8% of postings, arrives as
+`[]` open-to-anyone, an explicit Mexico, a LATAM country, or worldwide, and all of it is surfaced.
+
+Use `--stated-only --sort confidence` when you want only what you can definitely hold.
 
 `find` refuses rather than returning an empty list when it has nothing to narrow by, because an
 empty result is indistinguishable from "nothing matched".

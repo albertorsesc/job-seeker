@@ -47,6 +47,32 @@ ELIGIBLE_STATUSES: frozenset[EligibilityStatus] = frozenset(
 )
 
 
+# Statuses where a board affirmatively said the seeker may hold the role. `remote-verify` is
+# deliberately absent: it means nobody said, which is a lead rather than a fact.
+#
+# Two tiers, not four. An earlier version ranked home-based above global above regional, on the
+# reasoning that a directly named country is surer than one reached through the region map. Live
+# data killed it: that ordering put a 3% Node.js role above a 26% Senior AI Engineer, because the
+# difference between those statuses is geography, not confidence, and all three are equally
+# stated. What a seeker actually wants separated is "a board cleared me" from "nobody said".
+STATED_STATUSES: frozenset[EligibilityStatus] = frozenset(
+    {EligibilityStatus.HOME_BASED, EligibilityStatus.GLOBAL, EligibilityStatus.REGIONAL}
+)
+
+
+class SortOrder(StrEnum):
+    """How to rank what survived the filters.
+
+    Neither order is right for everyone, which is why this is a choice rather than a default
+    change. `FIT` answers "what suits my skills"; a 26% posting the board never cleared can outrank
+    a 3% one it did. `CONFIDENCE` puts every posting a board affirmatively cleared above every
+    posting nobody did, and sorts by fit inside each group.
+    """
+
+    FIT = "fit"
+    CONFIDENCE = "confidence"
+
+
 class SearchQuery(BaseModel):
     """A request for postings, interpreted by each source in its own dialect."""
 
@@ -70,6 +96,11 @@ class SearchQuery(BaseModel):
     # the first fetched.
     max_results: int | None = Field(default=None, ge=1)
     max_age_days: int | None = Field(default=30, ge=1)
+    # Drop postings whose eligibility nobody stated, for this search only. The profile's
+    # `include_unverified` is the standing preference; this narrows further and never widens, so a
+    # seeker who has already opted out of unverified postings cannot accidentally opt back in.
+    stated_only: bool = False
+    sort: SortOrder = SortOrder.FIT
 
 
 # Design notes for EligibilityHints, kept out of the docstring because that text is published in

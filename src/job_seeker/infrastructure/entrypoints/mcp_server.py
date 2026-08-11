@@ -19,7 +19,7 @@ from typing import TYPE_CHECKING, Any
 from pydantic import ValidationError
 
 from job_seeker import __version__
-from job_seeker.domain.models import SearchQuery, SearchResult
+from job_seeker.domain.models import SearchQuery, SearchResult, SortOrder
 from job_seeker.infrastructure.config.profile_loader import (
     MarkdownProfileProvider,
     ProfileError,
@@ -135,6 +135,8 @@ def build_server() -> FastMCP:
         scan_depth: int = 50,
         max_results: int | None = None,
         max_age_days: int = 30,
+        stated_only: bool = False,
+        sort: SortOrder = SortOrder.FIT,
         sources: list[str] | None = None,
     ) -> SearchResult:
         """Search the job boards and return the postings the seeker can actually hold, ranked.
@@ -155,6 +157,13 @@ def build_server() -> FastMCP:
         did not say what period it meant, which is common, so a question like "which pay over 150k"
         must say how many postings it could not judge rather than silently dropping them.
 
+        `stated_only=True` drops postings whose eligibility nobody stated, leaving only those a
+        board affirmatively cleared. Use it when the seeker asks what they can definitely hold;
+        leave it off to see leads worth checking, which arrive as `remote-verify`.
+
+        `sort="confidence"` groups by how sure the eligibility verdict is before fit, so a certain
+        weak match outranks a likely one nobody cleared. Default `"fit"` does the opposite.
+
         Job descriptions are truncated in this payload; the full posting is at `job.url`.
         """
         profile = MarkdownProfileProvider.from_env().load()
@@ -167,6 +176,8 @@ def build_server() -> FastMCP:
                 scan_depth_per_source=scan_depth,
                 max_results=max_results,
                 max_age_days=max_age_days,
+                stated_only=stated_only,
+                sort=sort,
             )
         except ValidationError as exc:
             # Re-raised in the agent's own vocabulary. `SearchQuery` rejects

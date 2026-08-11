@@ -15,7 +15,7 @@ from pathlib import Path
 from pydantic import ValidationError
 
 from job_seeker import __version__
-from job_seeker.domain.models import SearchQuery, SearchResult
+from job_seeker.domain.models import SearchQuery, SearchResult, SortOrder
 from job_seeker.infrastructure.config.profile_loader import MarkdownProfileProvider, ProfileError
 from job_seeker.infrastructure.entrypoints.bounds import describe_bounds_error
 from job_seeker.infrastructure.entrypoints.search import execute_search
@@ -59,6 +59,19 @@ def _build_parser() -> argparse.ArgumentParser:
         "--max-results",
         type=int,
         help="cap the ranked output (default: no cap). Applied after ranking, so it keeps the best.",
+    )
+    find.add_argument(
+        "--stated-only",
+        action="store_true",
+        help="only postings whose eligibility the board affirmatively stated, dropping the "
+        "'remote-verify' ones nobody cleared. Narrows this search only.",
+    )
+    find.add_argument(
+        "--sort",
+        choices=[o.value for o in SortOrder],
+        default=SortOrder.FIT.value,
+        help="fit (default) ranks by how well a posting matches you; confidence groups by how "
+        "sure the eligibility verdict is, then by fit inside each group.",
     )
     find.add_argument("--max-age-days", type=int, default=30, help="ignore older postings")
     find.add_argument("--sources", help="comma-separated source names (default: all)")
@@ -120,6 +133,8 @@ def _find(args: argparse.Namespace) -> int:
             scan_depth_per_source=args.scan_depth,
             max_results=args.max_results,
             max_age_days=args.max_age_days,
+            stated_only=args.stated_only,
+            sort=SortOrder(args.sort),
         )
     except ValidationError as exc:
         print(describe_bounds_error(exc, _FIELD_FLAGS), file=sys.stderr)

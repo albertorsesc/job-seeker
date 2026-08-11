@@ -10,9 +10,11 @@ from __future__ import annotations
 from job_seeker.application.orchestrator import JobSeeker
 from job_seeker.domain.models import (
     EligibilityHints,
+    EligibilityStatus,
     Job,
     SearchQuery,
     SearchResult,
+    SortOrder,
     SourceResult,
 )
 from job_seeker.domain.profile import EligibilityRules, LocationProfile, Profile
@@ -148,6 +150,103 @@ class TestScanDepthAndMaxResultsAreDifferentThings:
         )
         assert len(result.jobs) == 5
         assert sum(c.kept for c in result.coverage) == 20
+
+
+class TestStatedOnlyAndConfidenceOrder:
+    """Two questions a seeker asks that fit alone cannot answer.
+
+    "What can I definitely hold" is not "what suits me best". A board that never said who may hold
+    a role produces `remote-verify`, which is a lead, and live data returned a 26% lead above a 5%
+    certainty. Which of those belongs first is the seeker's call, not the engine's.
+    """
+
+    @staticmethod
+    def _board() -> FakeSource:
+        jobs = [
+            # A weak match the board explicitly opened to the seeker's own country.
+            _job(
+                "Engineer A",
+                source="s",
+                company="Certain Co",
+                hints=EligibilityHints(location_restrictions=("Testland",)),
+            ),
+            # A strong match nobody cleared: no structured hints, and text that says nothing.
+            _job(
+                "Engineer B",
+                source="s",
+                company="Unverified Co",
+                description="python rag " * 8,
+                hints=EligibilityHints(),
+            ),
+        ]
+        return FakeSource("s", SourceResult(source="s", jobs=jobs, scanned=2))
+
+    def _run(self, **query: object) -> SearchResult:
+        seeker = JobSeeker.default([self._board()], _profile())
+        return seeker.run(SearchQuery(terms=["engineer"], max_age_days=None, **query))  # type: ignore[arg-type]
+
+    def test_by_default_the_better_match_wins_even_if_unverified(self) -> None:
+        result = self._run()
+        assert [j.job.company for j in result.jobs] == ["Unverified Co", "Certain Co"]
+
+    def test_confidence_order_puts_the_stated_verdict_first(self) -> None:
+        result = self._run(sort=SortOrder.CONFIDENCE)
+        assert [j.job.company for j in result.jobs] == ["Certain Co", "Unverified Co"]
+
+    def test_confidence_order_still_uses_fit_inside_a_tier(self) -> None:
+        """It groups, it does not reshuffle: two equally stated postings keep fit order.
+
+        This is why the tiers are stated-vs-unstated and not one per status. Ranking home-based
+        above regional put a 3% Node.js role above a 26% Senior AI Engineer on live data: the
+        difference between those statuses is geography, not confidence.
+        """
+        jobs = [
+            _job(
+                "Engineer weak",
+                source="s",
+                company="Weak",
+                hints=EligibilityHints(location_restrictions=("Testland",)),
+            ),
+            _job(
+                "Engineer strong",
+                source="s",
+                company="Strong",
+                description="python rag " * 8,
+                hints=EligibilityHints(location_restrictions=("Testland",)),
+            ),
+        ]
+        seeker = JobSeeker.default(
+            [FakeSource("s", SourceResult(source="s", jobs=jobs))], _profile()
+        )
+        result = seeker.run(
+            SearchQuery(terms=["engineer"], max_age_days=None, sort=SortOrder.CONFIDENCE)
+        )
+        assert [j.job.company for j in result.jobs] == ["Strong", "Weak"]
+
+    def test_stated_only_drops_what_no_board_cleared(self) -> None:
+        result = self._run(stated_only=True)
+        assert [j.job.company for j in result.jobs] == ["Certain Co"]
+        assert all(
+            j.eligibility.status is not EligibilityStatus.REMOTE_UNVERIFIED for j in result.jobs
+        )
+
+    def test_stated_only_is_off_by_default(self) -> None:
+        assert len(self._run().jobs) == 2
+
+    def test_stated_only_narrows_and_never_widens(self) -> None:
+        """The profile's `include_unverified: false` is a standing preference. A per-search flag
+        must not be able to undo it, or a seeker who opted out gets leads back without asking."""
+        opted_out = _profile()
+        opted_out = opted_out.model_copy(
+            update={
+                "eligibility": opted_out.eligibility.model_copy(
+                    update={"include_unverified": False}
+                )
+            }
+        )
+        seeker = JobSeeker.default([self._board()], opted_out)
+        result = seeker.run(SearchQuery(terms=["engineer"], max_age_days=None, stated_only=False))
+        assert [j.job.company for j in result.jobs] == ["Certain Co"]
 
 
 class TestCombination:

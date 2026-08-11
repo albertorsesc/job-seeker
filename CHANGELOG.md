@@ -60,6 +60,13 @@ Pre-1.0 and not yet depended on, so these breaks are taken now rather than carri
 - `describe_engine` checks whether a profile is loadable instead of reporting `can_search: true`
   unconditionally, and returns the reason when it is not.
 
+- `--stated-only` and `--sort confidence` (MCP: `stated_only`, `sort`). Eligibility already
+  recorded whether a board affirmatively cleared a posting or nobody said, but nothing let a seeker
+  act on it per search: `include_unverified` is a standing profile preference, and ranking was fit
+  only, so a 26% posting nobody cleared outranked a 5% one a board did. `stated_only` narrows a
+  single search and never widens it, so a profile that opted out of unverified postings stays
+  opted out.
+
 ### Fixed
 
 - The MCP payload no longer floods an agent's context. Job descriptions are trimmed to 600
