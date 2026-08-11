@@ -107,14 +107,31 @@ class TestTheAgentIsToldWhatItWillReceive:
     async def test_the_schema_describes_the_fields_an_agent_reasons_with(self, field: str) -> None:
         assert field in json.dumps((await self._find_jobs_tool()).outputSchema)
 
-    @pytest.mark.parametrize("derived", ["all_sources_ran", "annual_minimum", "is_eligible"])
-    async def test_derived_fields_are_named_in_the_descriptions(self, derived: str) -> None:
-        """They cannot be schema *properties*: the SDK builds the output schema in validation mode
-        (`model_json_schema(schema_generator=StrictJsonSchema)`, no `mode=`), and pydantic omits
-        computed fields there. They do arrive in the payload, so each model's description says so
-        rather than leaving the agent to discover them.
+    @pytest.mark.parametrize(
+        "owner,derived",
+        [
+            ("SearchResult", "all_sources_ran"),
+            ("SearchResult", "fully_scanned"),
+            ("SalaryRange", "annual_minimum"),
+            ("Eligibility", "is_eligible"),
+            ("ScoredJob", "is_suitable"),
+            ("SourceCoverage", "failed"),
+        ],
+    )
+    async def test_derived_fields_are_published_as_read_only_properties(
+        self, owner: str, derived: str
+    ) -> None:
+        """The values an agent reasons with, in the contract it is handed rather than in prose.
+
+        This is the reason the domain declares them as real fields rather than `computed_field`:
+        the SDK builds the output schema in validation mode
+        (`model_json_schema(schema_generator=StrictJsonSchema)`, no `mode=`), and a computed field
+        is in the serialization schema only, so it would be missing from exactly this document.
         """
-        assert derived in json.dumps((await self._find_jobs_tool()).outputSchema)
+        schema = (await self._find_jobs_tool()).outputSchema
+        assert schema is not None
+        published = {"SearchResult": schema, **schema["$defs"]}
+        assert published[owner]["properties"][derived]["readOnly"] is True
 
     async def test_the_schema_does_not_carry_maintainer_rationale(self) -> None:
         """The description text ships to every agent on every session, so it explains the payload

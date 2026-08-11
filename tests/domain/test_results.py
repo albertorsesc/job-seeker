@@ -7,6 +7,9 @@ plausible-looking answer and no signal that it is wrong.
 
 from __future__ import annotations
 
+import pytest
+from pydantic.json_schema import JsonSchemaMode
+
 from job_seeker.domain.models import (
     SearchQuery,
     SearchResult,
@@ -84,8 +87,10 @@ class TestDerivedValuesCrossTheWire:
         assert '"all_sources_ran":true' in wire
         assert '"fully_scanned":true' in wire
 
-    def test_the_serialization_schema_advertises_the_verdict(self) -> None:
-        """`computed_field` puts it in the schema, so the MCP tool contract documents it."""
-        schema = SearchResult.model_json_schema(mode="serialization")
+    @pytest.mark.parametrize("mode", ["validation", "serialization"])
+    def test_both_schemas_advertise_the_verdict(self, mode: JsonSchemaMode) -> None:
+        """Validation is the one the MCP tool publishes; serialization describes the payload. A
+        derived value in only one of them is a value some consumer has to be told about in prose."""
+        schema = SearchResult.model_json_schema(mode=mode)
         assert "all_sources_ran" in schema["properties"]
         assert "fully_scanned" in schema["properties"]
