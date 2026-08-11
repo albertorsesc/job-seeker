@@ -107,6 +107,7 @@ def get_xml(
     url: str,
     *,
     params: dict[str, Any] | None = None,
+    root: str | None = None,
     max_retries: int = 2,
     sleep: Callable[[float], None] | None = None,
 ) -> BeautifulSoup:
@@ -115,15 +116,27 @@ def get_xml(
     Parsed from `.content` rather than `.text`: an XML declaration names its own encoding, and
     handing the parser bytes lets it honor that instead of second-guessing httpx's charset.
 
-    The empty-document check is what makes this as safe as `get_json`. Where `json()` raises on a
-    Cloudflare challenge page, the XML parser accepts one and returns a soup with no elements in
-    it, so the adapter would report a clean run that found no jobs. Same failure, same
-    `DecodingError`, so the same `except httpx.HTTPError` in the adapter reports it.
+    Rejecting what came back is what makes this as safe as `get_json`. Where `json()` raises on a
+    Cloudflare challenge page, the XML parser takes one of two views of one and neither is an
+    error: a page with a doctype yields a document holding nothing, and a well-formed one parses
+    happily into an `html` root, which is a web page rather than the feed that was asked for.
+
+    `root` is how a caller says which document it came for ("rss"), and it covers the other half of
+    the same problem: a board that switches format still answers 200 with valid XML, and an adapter
+    reading elements that are no longer there would report a clean run that found no jobs. That is
+    the silent-failure shape `SourceCoverage` exists to prevent, so it is a `DecodingError` like
+    the rest, caught by the adapter's existing `except httpx.HTTPError`.
     """
     response = _get(client, url, params=params, max_retries=max_retries, sleep=sleep)
     document = BeautifulSoup(response.content, "xml")
-    if document.find() is None:
+    found = document.find()
+    name = found.name.lower() if isinstance(found, Tag) else None
+    if name is None or name == "html":
         raise httpx.DecodingError(f"non-XML response from {url}", request=response.request)
+    if root is not None and name != root.lower():
+        raise httpx.DecodingError(
+            f"expected a {root} document from {url}, got {name}", request=response.request
+        )
     return document
 
 
@@ -177,7 +190,7 @@ def _retry_after_delay(header: str) -> float | None:
     return (when - datetime.now(UTC)).total_seconds()
 
 
-def to_utc_from_email_date(value: str | None) -> datetime | None:
+def to_utc_from_email_date(value: str) -> datetime | None:
     """An RFC 2822 date as an aware UTC datetime, or None if it is absent or unreadable.
 
     One format, two callers, because two specifications point at the same grammar: an RSS
@@ -188,10 +201,11 @@ def to_utc_from_email_date(value: str | None) -> datetime | None:
     whole run with it. An unreadable value is None rather than an exception, so one malformed
     record cannot cost a page of good ones.
     """
-    if not value or not value.strip():
+    value = value.strip()
+    if not value:
         return None
     try:
-        when = parsedate_to_datetime(value.strip())
+        when = parsedate_to_datetime(value)
     except (TypeError, ValueError):
         return None
     return when if when.tzinfo is not None else when.replace(tzinfo=UTC)

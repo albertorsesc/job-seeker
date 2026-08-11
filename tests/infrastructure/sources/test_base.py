@@ -473,6 +473,27 @@ class TestGetXml:
                 )
         assert slept == [2.0]
 
+    def test_a_document_that_is_not_what_the_caller_came_for_raises(self) -> None:
+        """A board that switches format still answers 200 with valid XML. Without this the adapter
+        reads elements that are no longer there and reports a clean run that found no jobs."""
+        atom = "<feed xmlns='http://www.w3.org/2005/Atom'><entry><title>x</title></entry></feed>"
+        with respx.mock:
+            respx.get("https://example.com/feed.rss").mock(
+                return_value=httpx.Response(200, text=atom)
+            )
+            with base.build_client() as client, pytest.raises(httpx.HTTPError):
+                base.get_xml(
+                    client, "https://example.com/feed.rss", root="rss", sleep=lambda _: None
+                )
+
+    def test_the_document_it_did_come_for_passes(self) -> None:
+        with respx.mock:
+            respx.get("https://example.com/feed.rss").mock(
+                return_value=httpx.Response(200, text=self._FEED)
+            )
+            with base.build_client() as client:
+                assert base.get_xml(client, "https://example.com/feed.rss", root="rss") is not None
+
     def test_raises_on_a_non_429_error_status(self) -> None:
         with respx.mock:
             respx.get("https://example.com/feed.rss").mock(return_value=httpx.Response(503))
@@ -480,12 +501,21 @@ class TestGetXml:
                 base.get_xml(client, "https://example.com/feed.rss", sleep=lambda _: None)
 
     @pytest.mark.parametrize(
-        "body", ["<!doctype html><html><body>Just a moment...</body></html>", "", "not xml at all"]
+        "body",
+        [
+            "<!doctype html><html><body>Just a moment...</body></html>",
+            "<html><body>Just a moment...</body></html>",
+            "",
+            "not xml at all",
+        ],
+        ids=["challenge page", "challenge page with no doctype", "empty", "prose"],
     )
     def test_a_200_that_is_not_xml_raises_an_httpx_error(self, body: str) -> None:
-        """Where `json()` raises on a challenge page, the XML parser accepts one and hands back a
-        document with nothing in it. Without this check the adapter reports a clean run that found
-        no jobs, which is the silent-failure shape `SourceCoverage` exists to prevent."""
+        """Where `json()` raises on a challenge page, the XML parser finds a way to accept one: with
+        a doctype it yields a document holding nothing, and without one it parses into an `html`
+        root, which is a web page and not the feed that was asked for. Untreated, the adapter
+        reports a clean run that found no jobs, the silent-failure shape `SourceCoverage` exists to
+        prevent."""
         with respx.mock:
             respx.get("https://example.com/feed.rss").mock(
                 return_value=httpx.Response(200, text=body)
@@ -520,7 +550,7 @@ class TestToUtcFromEmailDate:
         parsed = base.to_utc_from_email_date("Tue, 11 Aug 2026 16:03:20")
         assert parsed is not None and parsed.tzinfo is not None
 
-    @pytest.mark.parametrize("value", [None, "", "   ", "yesterday", "2026-08-11T16:03:20"])
-    def test_an_unreadable_value_is_none_rather_than_an_exception(self, value: str | None) -> None:
+    @pytest.mark.parametrize("value", ["", "   ", "yesterday", "2026-08-11T16:03:20"])
+    def test_an_unreadable_value_is_none_rather_than_an_exception(self, value: str) -> None:
         """One malformed record must not cost the page of good ones around it."""
         assert base.to_utc_from_email_date(value) is None
