@@ -27,8 +27,10 @@ dependencies = [
 ]
 
 [project.optional-dependencies]
-# Heavy / flaky mainstream-board scraping. Kept optional so the core stays lean.
-jobspy = ["python-jobspy>=1.1.80"]
+# No `jobspy` extra: the adapter does not exist yet. Declaring the dependency for unwritten code
+# cost 11 packages including pandas and numpy, and blocked dependency updates outright, because
+# python-jobspy caps markdownify below 0.14 and nothing can bump past it. The extra comes back
+# with the adapter that needs it.
 # The MCP server interface for local agents.
 #
 # Capped below 2.0 because the code only works on 1.x, and saying `>=1.2` claimed otherwise. The
@@ -102,5 +104,5 @@ strict = true
 # typos, so `from job_seeker.sorces import X` would quietly become Any in a codebase whose
 # entire discipline is that imports point one way.
 [[tool.mypy.overrides]]
-module = ["bs4.*", "dateutil.*", "jobspy.*", "respx.*", "lxml.*", "yaml.*"]
+module = ["bs4.*", "dateutil.*", "respx.*", "lxml.*", "yaml.*"]
 ignore_missing_imports = true
