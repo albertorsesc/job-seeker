@@ -18,6 +18,7 @@ from pydantic import (
     model_validator,
 )
 
+from job_seeker.domain.memory import PostingDecision
 from job_seeker.domain.regions import canonical_place
 
 
@@ -131,6 +132,13 @@ class SearchQuery(BaseModel):
     # matched, so a useful threshold is far below what the word "percent" suggests: no real posting
     # names every skill a seeker has.
     min_fit: float = Field(default=0.0, ge=0.0, le=1.0)
+    # Only postings the engine has not shown this seeker before. Ignored, not honoured, when
+    # memory could not be read: an empty list reads as "nothing new this week", which is the one
+    # lie that costs a seeker a job without their ever knowing it was told.
+    new_only: bool = False
+    # Postings the seeker dismissed are hidden by default. This asks for them back, for the run
+    # where they want to check what they threw away.
+    include_dismissed: bool = False
     sort: SortOrder = SortOrder.FIT
 
 
@@ -482,6 +490,38 @@ class Eligibility(BaseModel):
         return self
 
 
+class PostingHistory(BaseModel):
+    """What memory knew about this posting *before* this run.
+
+    Carried on a `ScoredJob` beside `fit`, `relevance` and `eligibility`, so a posting explains its
+    own past the way it already explains its fit and whether the seeker may hold it.
+    """
+
+    key: str
+    handle: str
+    # Deliveries before this run, so a first sighting reads 0 rather than 1. The seeker sees "shown
+    # 3 times since 12 Jul", which is what lets them sanity-check a NEW badge rather than trust it,
+    # and what makes a badge that is wrong visible rather than merely wrong.
+    times_seen: int = 0
+    first_seen_at: datetime | None = None
+    decision: PostingDecision | None = None
+    decided_at: datetime | None = None
+
+    is_new: bool = Field(
+        default=False,
+        json_schema_extra=_DERIVED,
+        description=(
+            "Whether this run is the first time the engine has shown you this posting. Not whether "
+            "the board posted it recently. Derived: sent to you, never sent by you."
+        ),
+    )
+
+    @model_validator(mode="after")
+    def _derive_is_new(self) -> Self:
+        self.is_new = self.first_seen_at is None
+        return self
+
+
 class ScoredJob(BaseModel):
     """A posting decorated with why it survived each stage. The pipeline's output unit.
 
@@ -494,6 +534,9 @@ class ScoredJob(BaseModel):
     fit: FitScore
     relevance: Relevance
     eligibility: Eligibility
+    # What memory knew about this posting before this run. None when memory could not answer, which
+    # is not the same as never having seen it: see `Recollection.available`.
+    history: PostingHistory | None = None
 
     is_suitable: bool = Field(
         default=False,
@@ -556,6 +599,49 @@ class SourceCoverage(SourceOutcome):
     kept: int = 0
 
 
+class MemoryStatus(BaseModel):
+    """Whether this run could remember, and what remembering changed about the answer.
+
+    Travels with the result for the same reason coverage does: the consumer most in need of it is
+    an agent on the far end of an MCP call that never sees stderr. A run whose memory was
+    unreadable looks exactly like an ordinary run, except that nothing is marked new and every
+    posting the seeker banned is back in the list. Saying so is the difference between a caveat and
+    a silent regression.
+    """
+
+    enabled: bool = True  # false when the seeker turned memory off for this run
+    available: bool = False  # the journal could be read
+    recorded: bool = False  # this run's postings were written back
+    error: str = ""  # why the read failed
+    write_error: str = ""  # why the write failed. Separate: a read can work when a write cannot.
+    known: int = 0  # postings remembered before this run
+    # Counted before `max_results`, matching how `SourceCoverage.kept` is counted, so a `new` larger
+    # than the new postings actually returned is exactly how a caller sees the cap bite.
+    new: int = 0
+    dismissed_hidden: int = 0
+    not_new_hidden: int = 0
+    previous_run_at: datetime | None = None
+
+    healthy: bool = Field(
+        default=False,
+        json_schema_extra=_DERIVED,
+        description=(
+            "Whether memory worked end to end this run. When false, nothing is marked new and "
+            "postings the seeker dismissed are NOT hidden. Derived; say so when reporting."
+        ),
+    )
+
+    @model_validator(mode="after")
+    def _derive_healthy(self) -> Self:
+        self.healthy = (
+            self.enabled
+            and self.available
+            and self.recorded
+            and not (self.error or self.write_error)
+        )
+        return self
+
+
 class SearchResult(BaseModel):
     """A finished run: the ranked postings, and the truth about how they were found.
 
@@ -569,6 +655,7 @@ class SearchResult(BaseModel):
     query: SearchQuery
     jobs: list[ScoredJob] = Field(default_factory=list)
     coverage: list[SourceCoverage] = Field(default_factory=list)
+    memory: MemoryStatus = Field(default_factory=MemoryStatus)
 
     # The two honesty flags, derived from coverage on every construction.
     #

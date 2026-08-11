@@ -16,11 +16,18 @@ from collections.abc import Callable
 from concurrent.futures import ThreadPoolExecutor
 from datetime import UTC, datetime, timedelta
 
-from job_seeker.application.ports import JobSource
+from job_seeker.application.ports import JobSource, PostingMemory
+from job_seeker.domain.memory import (
+    MemoryWrite,
+    PostingDecision,
+    Recollection,
+    Sighting,
+)
 from job_seeker.domain.models import (
     STATED_STATUSES,
     EligibilityStatus,
     Job,
+    MemoryStatus,
     Relevance,
     ScoredJob,
     SearchQuery,
@@ -36,6 +43,7 @@ from job_seeker.domain.services import (
     ProfileScorer,
     RelevanceFilter,
 )
+from job_seeker.domain.services.history import HistoryClassifier
 
 # Bound the fan-out: enough to run every board concurrently without spawning an unbounded pool if
 # a deployment ever registers dozens. Sources are I/O-bound, so threads (not processes) fit.
@@ -62,6 +70,8 @@ class JobSeeker:
         scorer: ProfileScorer,
         classifier: EligibilityClassifier,
         profile: Profile,
+        memory: PostingMemory,
+        history: HistoryClassifier,
     ) -> None:
         self._sources = sources
         self._dedup = deduplicator
@@ -69,10 +79,19 @@ class JobSeeker:
         self._scorer = scorer
         self._classifier = classifier
         self._profile = profile
+        self._memory = memory
+        self._history = history
 
     @classmethod
-    def default(cls, sources: list[JobSource], profile: Profile) -> JobSeeker:
-        """Wire the standard domain services from a profile. The composition root's entry point."""
+    def default(
+        cls, sources: list[JobSource], profile: Profile, memory: PostingMemory
+    ) -> JobSeeker:
+        """Wire the standard domain services from a profile. The composition root's entry point.
+
+        `memory` is required rather than defaulted. A default would let a caller forget it and get
+        a silently forgetful engine, which is the same shape of mistake as a salary figure with no
+        currency: the value looks fine and means something else.
+        """
         return cls(
             sources=sources,
             deduplicator=Deduplicator(),
@@ -80,11 +99,14 @@ class JobSeeker:
             scorer=ProfileScorer(profile),
             classifier=EligibilityClassifier(profile),
             profile=profile,
+            memory=memory,
+            history=HistoryClassifier(),
         )
 
     def run(self, query: SearchQuery) -> SearchResult:
         """Fan out, dedupe, filter to what was searched for, score, classify, keep the holdable,
         rank. Returns jobs plus honest coverage."""
+        recollection = self._guarded_recall()
         source_results = self._fetch_all(query)
         collected = [job for result in source_results for job in result.jobs]
         fresh = [job for job in collected if _within_age(job.posted_at, query.max_age_days)]
@@ -97,13 +119,20 @@ class JobSeeker:
         suitable = [
             scored
             for job, relevance in assessed
-            if relevance.keep and (scored := self._evaluate(job, relevance, query)) is not None
+            if relevance.keep
+            and (scored := self._evaluate(job, relevance, query, recollection)) is not None
         ]
-        ranked = sorted(suitable, key=_ordering(query.sort), reverse=True)
+        # A separate pass rather than two more clauses inside `_is_suitable`, because the counts are
+        # part of the answer: a list that shrank has to be able to say why, and "nothing new this
+        # week" is a different report from "twelve new". Folding these into the suitability check
+        # would make both counts unreachable.
+        kept, dismissed_hidden, not_new_hidden = _narrow_by_memory(suitable, query)
+        ranked = sorted(kept, key=_ordering(query.sort), reverse=True)
         # The cap is applied after ranking, which is the whole point of having it: asking for five
         # results now returns the five best, where the old per-source depth returned five of
         # whatever happened to be fetched first.
         capped = ranked[: query.max_results] if query.max_results is not None else ranked
+        write = self._guarded_record(capped)
         return SearchResult(
             # Coverage counts what each board *matched*, before the cap, so `sum(kept)` exceeding
             # `len(jobs)` is exactly how a caller sees that the cap bit. Counting post-cap would
@@ -111,7 +140,49 @@ class JobSeeker:
             query=query,
             jobs=capped,
             coverage=self._coverage(source_results, ranked),
+            memory=MemoryStatus(
+                enabled=recollection.enabled,
+                available=recollection.available,
+                recorded=bool(capped) and not write.error,
+                error=recollection.error,
+                write_error=write.error,
+                known=len(recollection.records),
+                new=sum(1 for scored in ranked if scored.history and scored.history.is_new),
+                dismissed_hidden=dismissed_hidden,
+                not_new_hidden=not_new_hidden,
+                previous_run_at=recollection.previous_run_at,
+            ),
         )
+
+    def _guarded_recall(self) -> Recollection:
+        """Recall, turning any escape into an unavailable memory.
+
+        `PostingMemory.recall` is contracted never to raise, but that is a docstring rather than an
+        enforcement, exactly as it is for `JobSource.fetch`. A careless adapter must cost the seeker
+        their newness markers, not their search.
+        """
+        try:
+            return self._memory.recall()
+        except Exception as exc:  # noqa: BLE001 - an adapter may do anything
+            return Recollection(available=False, error=f"{type(exc).__name__}: {exc}")
+
+    def _guarded_record(self, delivered: list[ScoredJob]) -> MemoryWrite:
+        """Write down what this run delivered. Same guard, same reason."""
+        sightings = tuple(
+            Sighting(
+                key=scored.history.key,
+                title=scored.job.title,
+                company=scored.job.company,
+                source=scored.job.source,
+                url=scored.job.url,
+            )
+            for scored in delivered
+            if scored.history is not None
+        )
+        try:
+            return self._memory.record(sightings)
+        except Exception as exc:  # noqa: BLE001 - an adapter may do anything
+            return MemoryWrite(error=f"{type(exc).__name__}: {exc}")
 
     def _fetch_all(self, query: SearchQuery) -> list[SourceResult]:
         if not self._sources:
@@ -133,7 +204,9 @@ class JobSeeker:
         except Exception as exc:  # noqa: BLE001 - deliberately catch-all: an adapter may do anything
             return SourceResult(source=source.name, error=f"{type(exc).__name__}: {exc}")
 
-    def _evaluate(self, job: Job, relevance: Relevance, query: SearchQuery) -> ScoredJob | None:
+    def _evaluate(
+        self, job: Job, relevance: Relevance, query: SearchQuery, recollection: Recollection
+    ) -> ScoredJob | None:
         """Score and classify one job; return a ScoredJob, or None if the seeker cannot hold it.
 
         The relevance verdict is decided upstream (it gates whether we score at all) and passed in
@@ -141,7 +214,13 @@ class JobSeeker:
         """
         fit = self._scorer.score(job)
         eligibility = self._classifier.classify(job)
-        scored = ScoredJob(job=job, fit=fit, relevance=relevance, eligibility=eligibility)
+        scored = ScoredJob(
+            job=job,
+            fit=fit,
+            relevance=relevance,
+            eligibility=eligibility,
+            history=self._history.classify(recollection, job),
+        )
         return scored if self._is_suitable(scored, query) else None
 
     def _is_suitable(self, scored: ScoredJob, query: SearchQuery) -> bool:
@@ -197,3 +276,29 @@ def _ordering(order: SortOrder) -> Callable[[ScoredJob], tuple[int, ...]]:
             scored.fit.raw,
         )
     return lambda scored: (scored.fit.raw,)
+
+
+def _narrow_by_memory(
+    scored: list[ScoredJob], query: SearchQuery
+) -> tuple[list[ScoredJob], int, int]:
+    """Apply what memory knows, and count what that cost.
+
+    Both filters are skipped entirely when memory could not answer, which is why `history` being
+    None is checked rather than treated as "never seen". Honouring `new_only` over an unreadable
+    journal would print an empty list that reads as "nothing new this week", and that is the one
+    lie that costs a seeker a job without their ever learning it was told.
+    """
+    kept: list[ScoredJob] = []
+    dismissed_hidden = 0
+    not_new_hidden = 0
+    for job in scored:
+        history = job.history
+        if history is not None:
+            if history.decision is PostingDecision.DISMISSED and not query.include_dismissed:
+                dismissed_hidden += 1
+                continue
+            if query.new_only and not history.is_new:
+                not_new_hidden += 1
+                continue
+        kept.append(job)
+    return kept, dismissed_hidden, not_new_hidden

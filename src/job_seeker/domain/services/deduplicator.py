@@ -52,22 +52,42 @@ _WHITESPACE = re.compile(r"\s+")
 _UNDATED = datetime.min.replace(tzinfo=UTC)
 
 
+# The vocabulary of the identity key. Bumping this is not a refactor: every posting a seeker has
+# dismissed is filed under a key computed by the old rules, so a changed key orphans their
+# decisions and the postings they banned come back. Change it deliberately, and read
+# `test_deduplicator`'s golden table first, which exists to make an accidental change fail loudly.
+IDENTITY_VERSION = 1
+
+
+def posting_identity(job: Job, /) -> str:
+    """What makes two postings the same posting: normalized company and title.
+
+    URL and source are ignored, which is the point. Every board has its own apply URL for the same
+    role, so a URL key never merges anything, and that was the bug this module was written to fix.
+
+    One function, not two, because the same question is asked twice: "the same posting on two
+    boards" during a run, and "the same posting on two Tuesdays" across runs. Two normalizers that
+    have to agree will drift, and the drift surfaces months later as a dismissal that quietly
+    stopped working.
+
+    When the company normalizes to empty (blank, or a name that is only a legal form), the title
+    alone is too weak a key: every same-title posting would collapse into one and distinct roles
+    would be silently dropped. So a company-less job keys on its URL instead, which never merges it
+    with another posting.
+    """
+    company = _normalize_company(job.company)
+    title = _normalize_title(job.title)
+    if not company:
+        return f"url:{job.url.strip().lower()}|{title}"
+    return f"{company}|{title}"
+
+
 class Deduplicator:
     """Merges postings that are the same job across boards, keeping the best representative."""
 
     def identity(self, job: Job) -> str:
-        """The cross-board key: normalized company and title. URL and source are ignored.
-
-        When the company normalizes to empty (blank, or a name that is only a legal form), the
-        title alone is too weak a key: every same-title posting would collapse into one and
-        distinct roles would be silently dropped. So a company-less job keys on its URL instead,
-        which never merges it with another posting.
-        """
-        company = _normalize_company(job.company)
-        title = _normalize_title(job.title)
-        if not company:
-            return f"url:{job.url.strip().lower()}|{title}"
-        return f"{company}|{title}"
+        """The cross-board key. See `posting_identity`, which this delegates to."""
+        return posting_identity(job)
 
     def dedupe(self, jobs: list[Job]) -> list[Job]:
         """One record per identity, preserving the order each identity was first seen.

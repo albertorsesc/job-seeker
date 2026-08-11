@@ -7,7 +7,16 @@ and ranks the rest. Exercised with in-memory fake sources; no network.
 
 from __future__ import annotations
 
+from datetime import UTC, datetime
+
 from job_seeker.application.orchestrator import JobSeeker
+from job_seeker.domain.memory import (
+    MemoryWrite,
+    PostingDecision,
+    PostingRecord,
+    Recollection,
+    Sighting,
+)
 from job_seeker.domain.models import (
     EligibilityHints,
     EligibilityStatus,
@@ -18,6 +27,7 @@ from job_seeker.domain.models import (
     SourceResult,
 )
 from job_seeker.domain.profile import EligibilityRules, LocationProfile, Profile
+from job_seeker.domain.services.deduplicator import posting_identity
 
 
 def _profile(**rules: object) -> Profile:
@@ -37,6 +47,43 @@ def _job(title: str, *, source: str, company: str = "Acme", url: str = "", **fie
         hints=fields.pop("hints", EligibilityHints(location_restrictions=())),  # type: ignore[arg-type]
         **fields,  # type: ignore[arg-type]
     )
+
+
+class FakeMemory:
+    """A journal in a dict. Satisfies `PostingMemory` structurally, imports no infrastructure.
+
+    `available` is a constructor argument because the interesting cases are not what it remembers
+    but whether it could remember at all: a search must behave differently when the journal is
+    unreadable, and that difference is invisible if the double is always healthy.
+    """
+
+    def __init__(
+        self,
+        records: dict[str, PostingRecord] | None = None,
+        *,
+        available: bool = True,
+        raises: bool = False,
+    ) -> None:
+        self.records = records or {}
+        self.recorded: tuple[Sighting, ...] = ()
+        self._available = available
+        self._raises = raises
+
+    def recall(self) -> Recollection:
+        if self._raises:
+            raise RuntimeError("careless adapter that forgot to catch")
+        return Recollection(records=self.records, available=self._available)
+
+    def record(self, sightings: tuple[Sighting, ...], /) -> MemoryWrite:
+        if self._raises:
+            raise RuntimeError("careless adapter that forgot to catch")
+        self.recorded = sightings
+        return MemoryWrite(written=len(sightings))
+
+    def decide(
+        self, refs: tuple[str, ...], decision: PostingDecision | None, note: str, /
+    ) -> MemoryWrite:
+        return MemoryWrite()
 
 
 class FakeSource:
@@ -61,7 +108,7 @@ class FakeSource:
 
 
 def _run(sources: list[FakeSource], profile: Profile | None = None) -> SearchResult:
-    seeker = JobSeeker.default(list(sources), profile or _profile())
+    seeker = JobSeeker.default(list(sources), profile or _profile(), FakeMemory())
     return seeker.run(SearchQuery(max_age_days=None))
 
 
@@ -123,7 +170,7 @@ class TestScanDepthAndMaxResultsAreDifferentThings:
         return FakeSource(name, SourceResult(source=name, jobs=jobs, scanned=count))
 
     def _search(self, sources: list[FakeSource], **query: object) -> SearchResult:
-        seeker = JobSeeker.default(list(sources), _profile())
+        seeker = JobSeeker.default(list(sources), _profile(), FakeMemory())
         return seeker.run(SearchQuery(terms=["engineer"], max_age_days=None, **query))  # type: ignore[arg-type]
 
     def test_max_results_caps_the_output_after_ranking(self) -> None:
@@ -182,7 +229,7 @@ class TestStatedOnlyAndConfidenceOrder:
         return FakeSource("s", SourceResult(source="s", jobs=jobs, scanned=2))
 
     def _run(self, **query: object) -> SearchResult:
-        seeker = JobSeeker.default([self._board()], _profile())
+        seeker = JobSeeker.default([self._board()], _profile(), FakeMemory())
         return seeker.run(SearchQuery(terms=["engineer"], max_age_days=None, **query))  # type: ignore[arg-type]
 
     def test_by_default_the_better_match_wins_even_if_unverified(self) -> None:
@@ -216,7 +263,7 @@ class TestStatedOnlyAndConfidenceOrder:
             ),
         ]
         seeker = JobSeeker.default(
-            [FakeSource("s", SourceResult(source="s", jobs=jobs))], _profile()
+            [FakeSource("s", SourceResult(source="s", jobs=jobs))], _profile(), FakeMemory()
         )
         result = seeker.run(
             SearchQuery(terms=["engineer"], max_age_days=None, sort=SortOrder.CONFIDENCE)
@@ -244,7 +291,7 @@ class TestStatedOnlyAndConfidenceOrder:
                 )
             }
         )
-        seeker = JobSeeker.default([self._board()], opted_out)
+        seeker = JobSeeker.default([self._board()], opted_out, FakeMemory())
         result = seeker.run(SearchQuery(terms=["engineer"], max_age_days=None, stated_only=False))
         assert [j.job.company for j in result.jobs] == ["Certain Co"]
 
@@ -300,12 +347,12 @@ class TestAgeBackstop:
     def test_a_stale_job_from_a_source_that_ignored_max_age_is_dropped(self) -> None:
         """max_age_days is part of the query contract; the orchestrator enforces it centrally so a
         source that ignores it cannot leak stale postings into the ranked result."""
-        from datetime import UTC, datetime, timedelta
+        from datetime import timedelta
 
         fresh = _job("Fresh Dev", source="a", posted_at=datetime.now(UTC) - timedelta(days=2))
         stale = _job("Stale Dev", source="a", posted_at=datetime.now(UTC) - timedelta(days=400))
         src = FakeSource("a", SourceResult(source="a", jobs=[fresh, stale]))
-        seeker = JobSeeker.default([src], _profile())
+        seeker = JobSeeker.default([src], _profile(), FakeMemory())
         result = seeker.run(SearchQuery(max_age_days=30))
         assert {j.job.title for j in result.jobs} == {"Fresh Dev"}
 
@@ -313,7 +360,7 @@ class TestAgeBackstop:
         """No date means we cannot judge age; keep it rather than silently drop it."""
         undated = _job("Undated Dev", source="a", posted_at=None)
         src = FakeSource("a", SourceResult(source="a", jobs=[undated]))
-        seeker = JobSeeker.default([src], _profile())
+        seeker = JobSeeker.default([src], _profile(), FakeMemory())
         result = seeker.run(SearchQuery(max_age_days=30))
         assert len(result.jobs) == 1
 
@@ -346,7 +393,7 @@ class TestMinimumFit:
                 scanned=2,
             ),
         )
-        seeker = JobSeeker.default([board], _profile())
+        seeker = JobSeeker.default([board], _profile(), FakeMemory())
         return seeker.run(SearchQuery(terms=["engineer"], max_age_days=None, **query))  # type: ignore[arg-type]
 
     def test_the_default_keeps_a_posting_that_matched_nothing(self) -> None:
@@ -366,3 +413,92 @@ class TestMinimumFit:
     def test_it_narrows_without_reordering(self) -> None:
         unfiltered = [s.job.title for s in self._run().jobs if s.fit.value >= 0.4]
         assert [s.job.title for s in self._run(min_fit=0.4).jobs] == unfiltered
+
+
+class TestMemoryNarrowsTheAnswer:
+    """What remembering changes about a run. The dangerous direction is hiding a job the seeker
+    would have wanted, so every filter here is checked for what it removed as well as what it kept.
+    """
+
+    @staticmethod
+    def _jobs() -> list[Job]:
+        return [
+            _job("Python Engineer", source="b", company="Acme"),
+            _job("Rag Engineer", source="b", company="Northwind"),
+        ]
+
+    def _run(self, memory: FakeMemory, **query: object) -> SearchResult:
+        board = FakeSource("b", SourceResult(source="b", jobs=self._jobs(), scanned=2))
+        seeker = JobSeeker.default([board], _profile(), memory)
+        return seeker.run(SearchQuery(terms=["engineer"], max_age_days=None, **query))  # type: ignore[arg-type]
+
+    @staticmethod
+    def _remembered(job: Job, **fields: object) -> dict[str, PostingRecord]:
+        key = posting_identity(job)
+        when = datetime(2026, 7, 1, tzinfo=UTC)
+        return {
+            key: PostingRecord(
+                key=key,
+                first_seen_at=when,
+                last_seen_at=when,
+                times_seen=1,
+                **fields,  # type: ignore[arg-type]
+            )
+        }
+
+    def test_a_dismissed_posting_is_absent_and_counted(self) -> None:
+        dismissed = self._remembered(self._jobs()[0], decision=PostingDecision.DISMISSED)
+        result = self._run(FakeMemory(dismissed))
+        assert "Python Engineer" not in [j.job.title for j in result.jobs]
+        assert result.memory.dismissed_hidden == 1
+
+    def test_asking_for_dismissed_postings_returns_them(self) -> None:
+        dismissed = self._remembered(self._jobs()[0], decision=PostingDecision.DISMISSED)
+        result = self._run(FakeMemory(dismissed), include_dismissed=True)
+        assert "Python Engineer" in [j.job.title for j in result.jobs]
+
+    def test_an_applied_posting_stays_visible_and_carries_its_decision(self) -> None:
+        """Hiding it would lose the thing the seeker most wants to see: what they already went for."""
+        applied = self._remembered(self._jobs()[0], decision=PostingDecision.APPLIED)
+        result = self._run(FakeMemory(applied))
+        found = next(j for j in result.jobs if j.job.title == "Python Engineer")
+        assert found.history is not None
+        assert found.history.decision is PostingDecision.APPLIED
+
+    def test_new_only_returns_only_what_was_never_shown(self) -> None:
+        known = self._remembered(self._jobs()[0])
+        result = self._run(FakeMemory(known), new_only=True)
+        assert [j.job.title for j in result.jobs] == ["Rag Engineer"]
+        assert result.memory.not_new_hidden == 1
+
+    def test_new_only_over_an_unreadable_memory_returns_everything(self) -> None:
+        """The one lie that costs a seeker a job without their knowing: an empty list that reads as
+        "nothing new this week" when the truth is that nothing could be determined."""
+        result = self._run(FakeMemory(available=False), new_only=True)
+        assert len(result.jobs) == 2
+        assert result.memory.available is False
+        assert result.memory.healthy is False
+
+    def test_an_unreadable_memory_does_not_hide_dismissed_postings_silently(self) -> None:
+        dismissed = self._remembered(self._jobs()[0], decision=PostingDecision.DISMISSED)
+        result = self._run(FakeMemory(dismissed, available=False))
+        assert len(result.jobs) == 2
+        assert result.memory.dismissed_hidden == 0
+
+    def test_it_records_what_it_returned_and_nothing_else(self) -> None:
+        """The journal holds what was delivered, not what was crawled, which is what makes "new"
+        mean new to the person."""
+        memory = FakeMemory()
+        self._run(memory, max_results=1)
+        assert len(memory.recorded) == 1
+
+    def test_a_memory_that_raises_on_recall_still_produces_a_search(self) -> None:
+        result = self._run(FakeMemory(raises=True))
+        assert len(result.jobs) == 2
+        assert result.memory.available is False
+        assert result.memory.error
+
+    def test_a_healthy_run_says_so(self) -> None:
+        result = self._run(FakeMemory())
+        assert result.memory.healthy is True
+        assert result.memory.new == 2

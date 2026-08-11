@@ -16,6 +16,11 @@ profiles/
 # `job-seeker find --out` writes here. Reports embed the postings a specific
 # profile matched, so they are personal too.
 report.html
+
+# The posting journal: which companies the seeker applied to, and when. It lives in the
+# state directory by default, and this is the backstop for a --state pointed inside the repo.
+postings.jsonl
+*.jsonl
 report.json
 report.csv
 /out/
