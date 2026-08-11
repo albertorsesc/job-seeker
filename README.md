@@ -60,8 +60,10 @@ export JOB_SEEKER_PROFILE=~/my-profile.md
 
 # 2. Check the engine can run.
 job-seeker sources
-#   himalayas  available
-#   remoteok   available
+#   himalayas       available
+#   remoteok        available
+#   remotive        available
+#   weworkremotely  available
 
 # 3. Search.
 job-seeker find --terms "AI Engineer" --max-results 20 --format html --out report.html
@@ -228,7 +230,7 @@ Adding a board is one adapter file plus one line in the registry. Nothing in the
 | Himalayas | built | JSON API | Structured `locationRestrictions` and `timezoneRestrictions` per posting, which is what makes precise eligibility possible. Page size caps at 20 and filter params are ignored, so pagination plus client-side filtering |
 | RemoteOK | built | JSON API | First array element is legal boilerplate. No structured eligibility data, so its postings take the text path |
 | Remotive | built | JSON API | `candidate_required_location` is a comma-separated place list, so eligibility is precise here too. Salary is free text with an explicit period. The API returns exactly 20 postings and ignores every parameter, so a run always reports `truncated` |
-| WeWorkRemotely | planned | RSS | Latest ~100. Title is `"Company: Role"` |
+| WeWorkRemotely | built | RSS | `country` names the places a posting is open to, so eligibility is precise. Its `region` field is not a restriction: most postings say "Anywhere in the World" and some of those are US-only, so only `country` is reported as one. No pay field. The feed is ten postings per category and does not paginate, so a run always reports `truncated` |
 | WorkingNomads | planned | RSS | Best effort; has returned empty. Must never break a run |
 | JobSpy | planned | Scraper | Indeed, LinkedIn, Glassdoor, Google. Heavy and rate-limit prone, so an optional extra |
 

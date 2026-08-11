@@ -37,7 +37,7 @@ project is a synthesis of what each does best, plus our own eligibility layer:
 | Source repo | What we take |
 |---|---|
 | `speedyapply/JobSpy` | Multi-board scraping (Indeed, LinkedIn, Glassdoor, ZipRecruiter, Google). Wrapped as an **optional** source adapter (`python-jobspy`) when built, because it is heavy and rate-limit prone. Add the extra with the adapter, not before. |
-| `pranavv00/devjobs.site` (DevJobsHub) | Remote-first aggregation pattern over WeWorkRemotely, Remotive, RemoteOK, WorkingNomads. Their `clean_html` and relative-date parsing ideas are reimplemented in `sources/base.py`. |
+| `pranavv00/devjobs.site` (DevJobsHub) | Remote-first aggregation pattern over WeWorkRemotely, Remotive, RemoteOK, WorkingNomads. Their `clean_html` idea is reimplemented in `sources/base.py`. |
 | Himalayas public API | The eligibility star: every posting carries structured `locationRestrictions` (list of country/region strings) and `timezoneRestrictions` (list of UTC offsets). This is what makes precise eligibility filtering possible for any seeker location. |
 | `santifer/career-ops`, `MadsLorentzen/ai-job-search` (top-starred Claude Code plugins) | The **agent layer** pattern: grade/score postings, orchestrate "find me the best job" as agent tools. We express this as our MCP tools plus profile-driven scoring, but we do NOT install these plugins (they take over an agent's tool loop). |
 | **Our own contribution** | Profile-driven weighted scoring, an eligibility classifier (US-only / timezone-lock / region detection), noise filtering (non-engineering titles, human-"agent" false positives), dedup, and multi-format reporting. |
@@ -58,8 +58,16 @@ project is a synthesis of what each does best, plus our own eligibility layer:
   Filter by `tags`. Default DevJobsHub filter is dev-only; **broaden** to include ai/ml/llm/
   machine-learning/data tags. Fields: `position, company, description, url, date, tags, salary_min,
   salary_max, location`.
-- **WeWorkRemotely**: RSS at `https://weworkremotely.com/remote-jobs.rss` (latest ~100). Title is
-  `"Company: Role"`, split on first `": "`. Parse with `BeautifulSoup(content, "xml")`.
+- **WeWorkRemotely**: RSS at `https://weworkremotely.com/remote-jobs.rss`, exactly 100 items, ten
+  per category. `?page=2` returns the same hundred, so there is nothing to paginate. Fields:
+  `title, region, country, state, skills, category, type, description, pubDate, expires_at, guid,
+  link`. Title is `"Company: Role"`, split on the first `": "`. `pubDate` and `expires_at` are
+  RFC 2822 dates, not relative ones. There is no pay field.
+  **`region` is not a restriction:** 93 of 100 items say "Anywhere in the World" and 14 of those
+  also name a `country` that restricts them, one to the US alone. `country` is the eligibility
+  field. It lists ISO 3166 official names ("United States of America"), each prefixed by its flag
+  emoji, separated by commas with an Oxford "and"; split on the flags, since "Bosnia and
+  Herzegovina" contains the separator word.
 - **WorkingNomads**: RSS at `https://www.workingnomads.com/jobs/feed/development` (returned 0 in one
   run; treat as best-effort, must not break the pipeline if empty).
 - **ZipRecruiter**: blocked by Cloudflare 403 for scrapers; do not rely on it.
@@ -152,8 +160,12 @@ is settled and fine.
 
 - **S:** an adapter fetches and normalizes one board; a domain service does one kind of reasoning; a
   reporter renders and never filters.
-- **O:** a new board is one new adapter plus a registry entry. Nothing else changes. The architecture
-  test is what keeps that true.
+- **O:** a new board is one new adapter plus a registry entry, plus whatever new names for the world
+  it introduces. The first three land in `sources/`; the last lands in `domain/regions.py` as data,
+  because a board that calls a country something no other board calls it is adding a spelling, not a
+  rule. WeWorkRemotely added eleven. That is the domain being extended through a table rather than
+  through code, and it is expected: a contributor editing `regions.py` for a new board has not done
+  something wrong. The architecture test is what keeps the rest true.
 - **L:** every source is substitutable behind `fetch(query) -> SourceResult`, and **must not raise**:
   a board being down is an expected outcome reported in `SourceResult.error`, not an exception, since
   siblings are in flight on other threads.

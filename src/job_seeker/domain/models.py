@@ -18,6 +18,8 @@ from pydantic import (
     model_validator,
 )
 
+from job_seeker.domain.regions import canonical_place
+
 
 class EligibilityStatus(StrEnum):
     """How a posting relates to the seeker's location/work-authorization needs.
@@ -94,12 +96,22 @@ class SearchQuery(BaseModel):
     # shorter list actually wants, and it applies after ranking, so it keeps the best rather than
     # the first fetched.
     max_results: int | None = Field(default=None, ge=1)
-    max_age_days: int | None = Field(default=30, ge=1)
+    # Bounded for the same reason as the scan depth, and with a sharper edge: `age_cutoff`
+    # subtracts this many days from now, and a number too large for a C int raises OverflowError
+    # out of `fetch` rather than returning a date. Ten years is already far past any real use, and
+    # None is how a caller says "no age window" without reaching for a huge number to mean it.
+    max_age_days: int | None = Field(default=30, ge=1, le=3650)
     # Drop postings whose eligibility nobody stated, for this search only. The profile's
     # `include_unverified` is the standing preference; this narrows further and never widens, so a
     # seeker who has already opted out of unverified postings cannot accidentally opt back in.
     stated_only: bool = False
     sort: SortOrder = SortOrder.FIT
+
+
+# Marks a field the engine derives and the consumer only ever receives. `readOnly` is the JSON
+# Schema way of saying so, and it is what makes a derived field honest as a real field: the
+# contract carries the value AND states that supplying it is meaningless.
+_DERIVED: dict[str, Any] = {"readOnly": True}
 
 
 # Design notes for EligibilityHints, kept out of the docstring because that text is published in
@@ -125,6 +137,43 @@ class EligibilityHints(BaseModel):
 
     location_restrictions: tuple[str, ...] | None = None
     timezone_restrictions: tuple[float, ...] | None = None
+
+    # The comparable form of `location_restrictions`, derived on every construction.
+    #
+    # The same reason `SalaryRange` carries an annual figure beside the board's own: a value
+    # nobody can compare is not much of a fact. Four boards name one country four ways, and
+    # "United States of America", "USA" and "United States" are the same restriction written by
+    # Himalayas, a profile and WeWorkRemotely. Carried rather than recomputed at each comparison,
+    # because it was recomputed in two places in two orders and they disagreed.
+    #
+    # The board's own words stay above, and they are what a reason string and a report show. This
+    # is for deciding, not for reading.
+    canonical_locations: tuple[str, ...] | None = Field(
+        default=None,
+        json_schema_extra=_DERIVED,
+        description=(
+            "`location_restrictions` reduced to one name per place, so restrictions from "
+            "different boards can be compared. Derived: sent to you, never sent by you."
+        ),
+    )
+
+    @model_validator(mode="before")
+    @classmethod
+    def _derive_canonical(cls, data: Any) -> Any:
+        """Canonicalize before validation, because this model is frozen.
+
+        `None` survives as `None` and `()` as `()`: absent and "no restriction" are different
+        claims, and this whole model exists to keep them apart.
+        """
+        if not isinstance(data, dict):
+            return data
+        stated = data.get("location_restrictions")
+        canonical = (
+            None
+            if stated is None
+            else tuple(dict.fromkeys(canonical_place(str(place)) for place in stated))
+        )
+        return {**data, "canonical_locations": canonical}
 
 
 class CurrencySource(StrEnum):
@@ -163,10 +212,6 @@ class SalaryPeriod(StrEnum):
 # posting quoted hourly annualizes as though it were full-time, which overstates it. That is why
 # the annualized figures are exposed as separate fields rather than replacing what the board
 # published: the board's own numbers stay untouched and the derived ones are labelled derived.
-# Marks a field the engine derives and the consumer only ever receives. `readOnly` is the JSON
-# Schema way of saying so, and it is what makes a derived field honest as a real field: the
-# contract carries the value AND states that supplying it is meaningless.
-_DERIVED: dict[str, Any] = {"readOnly": True}
 
 
 def _annualize(value: Any, factor: float | None) -> float | None:

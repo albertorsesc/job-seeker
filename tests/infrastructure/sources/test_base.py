@@ -422,3 +422,166 @@ class TestGetJson:
             with base.build_client() as client, pytest.raises(httpx.HTTPError):
                 # HTTPError is the base class of DecodingError
                 base.get_json(client, "https://example.com/api", sleep=lambda _: None)
+
+
+class TestGetXml:
+    """The RSS side of the same transport. What matters is that it is the *same* transport: the
+    politeness lives in one place and an RSS board inherits it rather than reimplementing it."""
+
+    _FEED = "<rss version='2.0'><channel><item><title>x</title></item></channel></rss>"
+
+    def test_returns_a_parsed_document(self) -> None:
+        with respx.mock:
+            respx.get("https://example.com/feed.rss").mock(
+                return_value=httpx.Response(200, text=self._FEED)
+            )
+            with base.build_client() as client:
+                document = base.get_xml(client, "https://example.com/feed.rss")
+        items = document.find_all("item")
+        assert [base.element_text(item, "title") for item in items] == ["x"]
+
+    def test_it_honors_the_declared_encoding_rather_than_the_charset_header(self) -> None:
+        """Parsed from bytes, so the XML declaration wins. Served as latin-1 while the header says
+        utf-8, reading `.text` would turn a Spanish company name into mojibake."""
+        body = "<?xml version='1.0' encoding='ISO-8859-1'?><rss><item><title>Añadir</title></item></rss>"
+        with respx.mock:
+            respx.get("https://example.com/feed.rss").mock(
+                return_value=httpx.Response(
+                    200,
+                    content=body.encode("latin-1"),
+                    headers={"content-type": "application/rss+xml; charset=utf-8"},
+                )
+            )
+            with base.build_client() as client:
+                document = base.get_xml(client, "https://example.com/feed.rss")
+        assert base.element_text(document, "title") == "Añadir"
+
+    def test_backs_off_and_retries_on_429_the_same_way_the_json_path_does(self) -> None:
+        """The reason the transport was split out. Before it, this politeness existed only inside
+        `get_json` and the first RSS board would have had to grow its own."""
+        slept: list[float] = []
+        with respx.mock:
+            respx.get("https://example.com/feed.rss").mock(
+                side_effect=[
+                    httpx.Response(429, headers={"retry-after": "2"}),
+                    httpx.Response(200, text=self._FEED),
+                ]
+            )
+            with base.build_client() as client:
+                base.get_xml(
+                    client, "https://example.com/feed.rss", sleep=slept.append, max_retries=3
+                )
+        assert slept == [2.0]
+
+    def test_a_document_that_is_not_what_the_caller_came_for_raises(self) -> None:
+        """A board that switches format still answers 200 with valid XML. Without this the adapter
+        reads elements that are no longer there and reports a clean run that found no jobs."""
+        atom = "<feed xmlns='http://www.w3.org/2005/Atom'><entry><title>x</title></entry></feed>"
+        with respx.mock:
+            respx.get("https://example.com/feed.rss").mock(
+                return_value=httpx.Response(200, text=atom)
+            )
+            with base.build_client() as client, pytest.raises(httpx.HTTPError):
+                base.get_xml(
+                    client, "https://example.com/feed.rss", root="rss", sleep=lambda _: None
+                )
+
+    def test_the_document_it_did_come_for_passes(self) -> None:
+        with respx.mock:
+            respx.get("https://example.com/feed.rss").mock(
+                return_value=httpx.Response(200, text=self._FEED)
+            )
+            with base.build_client() as client:
+                assert base.get_xml(client, "https://example.com/feed.rss", root="rss") is not None
+
+    def test_raises_on_a_non_429_error_status(self) -> None:
+        with respx.mock:
+            respx.get("https://example.com/feed.rss").mock(return_value=httpx.Response(503))
+            with base.build_client() as client, pytest.raises(httpx.HTTPStatusError):
+                base.get_xml(client, "https://example.com/feed.rss", sleep=lambda _: None)
+
+    @pytest.mark.parametrize(
+        "body",
+        [
+            "<!doctype html><html><body>Just a moment...</body></html>",
+            "<html><body>Just a moment...</body></html>",
+            "",
+            "not xml at all",
+        ],
+        ids=["challenge page", "challenge page with no doctype", "empty", "prose"],
+    )
+    def test_a_200_that_is_not_xml_raises_an_httpx_error(self, body: str) -> None:
+        """Where `json()` raises on a challenge page, the XML parser finds a way to accept one: with
+        a doctype it yields a document holding nothing, and without one it parses into an `html`
+        root, which is a web page and not the feed that was asked for. Untreated, the adapter
+        reports a clean run that found no jobs, the silent-failure shape `SourceCoverage` exists to
+        prevent."""
+        with respx.mock:
+            respx.get("https://example.com/feed.rss").mock(
+                return_value=httpx.Response(200, text=body)
+            )
+            with base.build_client() as client, pytest.raises(httpx.HTTPError):
+                base.get_xml(client, "https://example.com/feed.rss", sleep=lambda _: None)
+
+    def test_passes_query_params(self) -> None:
+        with respx.mock:
+            route = respx.get("https://example.com/feed.rss").mock(
+                return_value=httpx.Response(200, text=self._FEED)
+            )
+            with base.build_client() as client:
+                base.get_xml(client, "https://example.com/feed.rss", params={"page": 2})
+        assert route.calls.last.request.url.params["page"] == "2"
+
+
+class TestToUtcFromEmailDate:
+    def test_it_reads_an_rss_pubdate(self) -> None:
+        assert base.to_utc_from_email_date("Tue, 11 Aug 2026 16:03:20 +0000") == datetime(
+            2026, 8, 11, 16, 3, 20, tzinfo=UTC
+        )
+
+    def test_it_converts_a_non_utc_offset_rather_than_dropping_it(self) -> None:
+        assert base.to_utc_from_email_date("Tue, 11 Aug 2026 16:03:20 -0500") == datetime(
+            2026, 8, 11, 21, 3, 20, tzinfo=UTC
+        )
+
+    def test_a_date_with_no_zone_is_read_as_utc_and_stays_aware(self) -> None:
+        """A naive datetime compared against an aware `now` raises during age filtering, which is
+        single-threaded and takes the whole run with it."""
+        parsed = base.to_utc_from_email_date("Tue, 11 Aug 2026 16:03:20")
+        assert parsed is not None and parsed.tzinfo is not None
+
+    @pytest.mark.parametrize("value", ["", "   ", "yesterday", "2026-08-11T16:03:20"])
+    def test_an_unreadable_value_is_none_rather_than_an_exception(self, value: str) -> None:
+        """One malformed record must not cost the page of good ones around it."""
+        assert base.to_utc_from_email_date(value) is None
+
+    @pytest.mark.parametrize(
+        "value",
+        [
+            "Tue, 11 Aug 99999999999 16:03:20 +0000",
+            "Tue, 11 Aug 2026 16:03:20 +99999999999999999999",
+        ],
+        ids=["11-digit year", "oversized zone offset"],
+    )
+    def test_a_number_too_large_for_a_date_is_none_rather_than_an_overflow(
+        self, value: str
+    ) -> None:
+        """The failure mode that is easy to miss: an int too large for the C int the datetime
+        constructor wants raises OverflowError, which is not a ValueError. Uncaught it escapes
+        `fetch` on the feed path, and `_get` on the Retry-After path, past every httpx catch."""
+        assert base.to_utc_from_email_date(value) is None
+
+    def test_an_overflowing_retry_after_date_falls_back_instead_of_escaping(self) -> None:
+        slept: list[float] = []
+        with respx.mock:
+            respx.get("https://example.com/api").mock(
+                side_effect=[
+                    httpx.Response(
+                        429, headers={"retry-after": "Tue, 11 Aug 99999999999 16:03:20 GMT"}
+                    ),
+                    httpx.Response(200, json={"ok": True}),
+                ]
+            )
+            with base.build_client() as client:
+                base.get_json(client, "https://example.com/api", sleep=slept.append, max_retries=3)
+        assert slept == [base._RATE_LIMIT_BACKOFF]
