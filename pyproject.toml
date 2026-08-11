@@ -38,7 +38,7 @@ dependencies = [
 # `mcp.server.mcpserver` and `FastMCP` to `MCPServer`, so every install resolving 2.0 fails at
 # import. CI did not catch it for two weeks: the only runs since were Dependabot's, which do not
 # execute the test matrix, so the branch showed green while nothing exercised this code.
-mcp = ["mcp>=1.2,<2"]
+mcp = ["mcp>=2.0.0,<3"]
 dev = [
     "pytest>=8.0",
     "pytest-asyncio>=0.23",
