@@ -117,6 +117,21 @@ class TestFindCommand:
         payload = json.loads(capsys.readouterr().out)
         assert payload["jobs"][0]["job"]["title"] == "Python Engineer"
 
+    def test_the_fit_floor_reaches_the_search(
+        self, tmp_path: Path, capsys: pytest.CaptureFixture[str], monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        """Not just accepted as a flag: a value that never reaches the query is a flag that lies."""
+        _wire_fake_board(monkeypatch, _a_job(), _a_job("Warehouse Engineer"))
+        arguments = ["find", "--profile", str(_write_profile(tmp_path)), "--format", "json"]
+
+        assert cli.main(arguments) == 0
+        unfiltered = json.loads(capsys.readouterr().out)
+        assert len(unfiltered["jobs"]) == 2  # both are on-topic; one just fits badly
+
+        assert cli.main([*arguments, "--min-fit", "0.5"]) == 0
+        filtered = json.loads(capsys.readouterr().out)
+        assert [job["job"]["title"] for job in filtered["jobs"]] == ["Python Engineer"]
+
     def test_writes_to_a_file_when_out_is_given(
         self, tmp_path: Path, capsys: pytest.CaptureFixture[str], monkeypatch: pytest.MonkeyPatch
     ) -> None:

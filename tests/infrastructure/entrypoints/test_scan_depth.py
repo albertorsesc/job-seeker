@@ -30,3 +30,21 @@ class TestBothEntrypointsReadTheDeclaredDepth:
         tool = mcp_server.build_server()._tool_manager.get_tool("find_jobs")
         assert tool is not None
         assert tool.parameters["properties"]["scan_depth"]["default"] == DEFAULT_SCAN_DEPTH
+
+
+class TestBothEntrypointsExposeTheFitFloor:
+    """`min_fit` is applied once, in the pipeline. What the entrypoints must agree on is the name
+    and the default, or a seeker and an agent asking for the same search get different lists."""
+
+    def test_the_cli_flag_defaults_to_no_filtering(self) -> None:
+        assert cli._build_parser().parse_args(["find"]).min_fit == 0.0
+
+    def test_the_mcp_tool_parameter_defaults_to_no_filtering(self) -> None:
+        tool = mcp_server.build_server()._tool_manager.get_tool("find_jobs")
+        assert tool is not None
+        assert inspect.signature(tool.fn).parameters["min_fit"].default == 0.0
+
+    def test_the_published_schema_shows_it_to_an_agent(self) -> None:
+        tool = mcp_server.build_server()._tool_manager.get_tool("find_jobs")
+        assert tool is not None
+        assert tool.parameters["properties"]["min_fit"]["default"] == 0.0

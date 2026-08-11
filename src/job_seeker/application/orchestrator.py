@@ -148,6 +148,10 @@ class JobSeeker:
         eligibility = scored.eligibility
         if not eligibility.is_eligible:
             return False
+        # Below the caller's fit floor. Applied here rather than in an entrypoint so the CLI and
+        # the MCP tool cannot mean different things by the same number.
+        if scored.fit.value < query.min_fit:
+            return False
         # A per-search narrowing on top of the profile's standing preference. `stated_only` drops
         # anything the board did not affirmatively clear, which is the difference between "here is
         # a lead" and "here is a job you can hold".

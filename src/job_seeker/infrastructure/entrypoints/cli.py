@@ -57,6 +57,14 @@ def _build_parser() -> argparse.ArgumentParser:
         "and it does not shorten the output.",
     )
     find.add_argument(
+        "--min-fit",
+        type=float,
+        default=0.0,
+        help="drop postings below this fit, 0.0 to 1.0 (default: 0.0, keep everything). Fit is "
+        "the share of your whole profile a posting matched, so a useful floor is lower than the "
+        "word percent suggests.",
+    )
+    find.add_argument(
         "--max-results",
         type=int,
         help="cap the ranked output (default: no cap). Applied after ranking, so it keeps the best.",
@@ -132,6 +140,7 @@ def _find(args: argparse.Namespace) -> int:
         query = SearchQuery(
             terms=terms,
             scan_depth_per_source=args.scan_depth,
+            min_fit=args.min_fit,
             max_results=args.max_results,
             max_age_days=args.max_age_days,
             stated_only=args.stated_only,

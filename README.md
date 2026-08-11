@@ -93,6 +93,7 @@ job-seeker find --max-results 10 --format html --out report.html
 | `--max-age-days` | ignore postings older than this (default 30) |
 | `--stated-only` | only postings a board affirmatively cleared, dropping `remote-verify` |
 | `--sort` | `fit` (default) or `confidence`, which puts everything a board cleared above everything nobody did |
+| `--min-fit` | drop postings below this fit, 0.0 to 1.0 (default 0.0, keep everything) |
 | `--sources` | restrict to named boards. A typo is refused rather than silently searching fewer |
 | `--format` | `html` (default), `json`, or `csv` |
 | `--out` | write to a file instead of stdout |
@@ -100,6 +101,12 @@ job-seeker find --max-results 10 --format html --out report.html
 `--scan-depth` and `--max-results` are deliberately separate. Reading more postings costs time and
 politeness; returning fewer costs nothing. Asking for a short list by scanning less would hand you
 the first few postings found rather than the best ones.
+
+`--min-fit` is the other half of reading deeply. Fit is the share of your **whole** profile a
+posting matched, so no real posting scores near 100: on one profile a full-depth run left 50
+holdable postings whose best fit was 52% and whose median was 4%. Ranking puts the good ones first,
+and a floor removes the tail entirely. Read a few results first, then set the floor from what you
+saw, because the right number depends on how broad your profile is.
 
 The depth ships at its maximum because reading shallowly measurably costs the answer. Boards order
 their feeds by recency, not by how well a posting suits you, so a shallow scan reads the newest
@@ -198,7 +205,7 @@ Four tools, and the agent is meant to use them together:
 | `describe_engine` | Is this configured and able to search? Names the problem when it is not |
 | `describe_profile` | **Who am I searching as?** Your name, location, skills, and the eligibility rules that decide every verdict |
 | `list_sources` | Which boards exist, and can each one run right now |
-| `find_jobs` | The search. `terms`, `scan_depth`, `max_results`, `max_age_days`, `sources` |
+| `find_jobs` | The search. `terms`, `scan_depth`, `max_results`, `min_fit`, `max_age_days`, `sources` |
 
 `describe_profile` exists because a misconfigured profile does not error, it answers confidently for
 the wrong person. An agent should state whose profile it used before you act on the results.

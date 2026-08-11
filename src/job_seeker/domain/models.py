@@ -119,6 +119,18 @@ class SearchQuery(BaseModel):
     # `include_unverified` is the standing preference; this narrows further and never widens, so a
     # seeker who has already opted out of unverified postings cannot accidentally opt back in.
     stated_only: bool = False
+    # Drop postings below this fit, for this search only. 0.0 keeps everything, which is the
+    # default and the only value that means "no fit filtering".
+    #
+    # It earns its place because ranking alone stopped being enough once the engine read deeply.
+    # Measured on one profile against a full-depth run: 50 postings survived eligibility, the best
+    # fitting 52%, and the median 4%. The list is mostly postings the seeker will never want, and
+    # it is the ranking that hides that rather than the filter.
+    #
+    # Compared against `FitScore.value`, which is the share of the profile's whole weight a posting
+    # matched, so a useful threshold is far below what the word "percent" suggests: no real posting
+    # names every skill a seeker has.
+    min_fit: float = Field(default=0.0, ge=0.0, le=1.0)
     sort: SortOrder = SortOrder.FIT
 
 

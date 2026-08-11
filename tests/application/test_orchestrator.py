@@ -327,3 +327,42 @@ class TestCoverage:
         assert cov.scanned == 50
         assert cov.kept == 1
         assert cov.truncated is True
+
+
+class TestMinimumFit:
+    """Ranking alone stopped being enough once the engine read deeply: a full-depth run leaves a
+    list whose median fit is a few percent, and the ranking is what hides that."""
+
+    @staticmethod
+    def _run(**query: object) -> SearchResult:
+        board = FakeSource(
+            "b",
+            SourceResult(
+                source="b",
+                jobs=[
+                    _job("Warehouse Engineer", source="b", description="forklift"),
+                    _job("Python Engineer", source="b", description="python and rag"),
+                ],
+                scanned=2,
+            ),
+        )
+        seeker = JobSeeker.default([board], _profile())
+        return seeker.run(SearchQuery(terms=["engineer"], max_age_days=None, **query))  # type: ignore[arg-type]
+
+    def test_the_default_keeps_a_posting_that_matched_nothing(self) -> None:
+        """0.0 must mean no fit filtering, never drop everything."""
+        titles = [scored.job.title for scored in self._run().jobs]
+        assert "Warehouse Engineer" in titles
+
+    def test_a_posting_below_the_floor_is_dropped(self) -> None:
+        titles = [scored.job.title for scored in self._run(min_fit=0.5).jobs]
+        assert titles == ["Python Engineer"]
+
+    def test_a_posting_exactly_at_the_floor_is_kept(self) -> None:
+        """At, not above: a caller who sets the floor to a value they just saw must still see it."""
+        exact = next(s for s in self._run().jobs if s.job.title == "Python Engineer").fit.value
+        assert [s.job.title for s in self._run(min_fit=exact).jobs] == ["Python Engineer"]
+
+    def test_it_narrows_without_reordering(self) -> None:
+        unfiltered = [s.job.title for s in self._run().jobs if s.fit.value >= 0.4]
+        assert [s.job.title for s in self._run(min_fit=0.4).jobs] == unfiltered
