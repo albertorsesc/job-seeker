@@ -36,7 +36,7 @@ project is a synthesis of what each does best, plus our own eligibility layer:
 
 | Source repo | What we take |
 |---|---|
-| `speedyapply/JobSpy` | Multi-board scraping (Indeed, LinkedIn, Glassdoor, ZipRecruiter, Google). Wrapped as an **optional** source adapter (`python-jobspy`), because it is heavy and rate-limit prone. |
+| `speedyapply/JobSpy` | Multi-board scraping (Indeed, LinkedIn, Glassdoor, ZipRecruiter, Google). Wrapped as an **optional** source adapter (`python-jobspy`) when built, because it is heavy and rate-limit prone. Add the extra with the adapter, not before. |
 | `pranavv00/devjobs.site` (DevJobsHub) | Remote-first aggregation pattern over WeWorkRemotely, Remotive, RemoteOK, WorkingNomads. Their `clean_html` and relative-date parsing ideas are reimplemented in `sources/base.py`. |
 | Himalayas public API | The eligibility star: every posting carries structured `locationRestrictions` (list of country/region strings) and `timezoneRestrictions` (list of UTC offsets). This is what makes precise eligibility filtering possible for any seeker location. |
 | `santifer/career-ops`, `MadsLorentzen/ai-job-search` (top-starred Claude Code plugins) | The **agent layer** pattern: grade/score postings, orchestrate "find me the best job" as agent tools. We express this as our MCP tools plus profile-driven scoring, but we do NOT install these plugins (they take over an agent's tool loop). |
@@ -91,8 +91,10 @@ project is a synthesis of what each does best, plus our own eligibility layer:
 - **HTTP:** `httpx` (0.28.1). **HTML/RSS parsing:** `beautifulsoup4` (4.15) + `lxml` (6.1).
   **Validation/models:** `pydantic` v2 (2.13). **Front-matter:** `pyyaml` (6.0). Dates:
   `python-dateutil`.
-- **Optional extras** (already in `pyproject.toml`): `jobspy` (`python-jobspy`), `mcp`, `dev`
-  (`pytest`, `pytest-asyncio`, `respx`, `ruff`, `mypy`).
+- **Optional extras** in `pyproject.toml`: `mcp`, and `dev` (`pytest`, `pytest-asyncio`,
+  `pytest-cov`, `respx`, `ruff`, `mypy`). There is deliberately no `jobspy` extra until the
+  adapter exists: declaring `python-jobspy` for unwritten code pulled in pandas and numpy and
+  blocked dependency updates, because it caps `markdownify` below 0.14 and nothing can bump past.
 
 ---
 
@@ -215,7 +217,7 @@ Maintainer-specific setup (real profile path, machine details, local MCP registr
 
 ```bash
 uv venv && source .venv/bin/activate
-uv pip install -e ".[dev,mcp,jobspy]"
+uv pip install -e ".[dev,mcp]"
 
 # the gate: ruff --fix, format, mypy strict (src + tests), pytest. Green before any commit.
 make test
