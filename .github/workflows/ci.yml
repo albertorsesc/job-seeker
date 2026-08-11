@@ -4,6 +4,18 @@ on:
   push:
     branches: [main]
   pull_request:
+  # Dependencies move whether or not this repo does, and nothing here pins them at install time:
+  # CI runs `uv pip install -e ".[dev,mcp]"`, which resolves fresh every run. Without a cadence,
+  # the newest signal about `main` is as old as the last commit.
+  #
+  # That is not hypothetical. `mcp 2.0.0` shipped on 2026-07-28 and removed the API this project
+  # imports. `main` last ran this matrix on 2026-07-19 and stayed broken for two weeks behind a
+  # green badge, because the only runs in between were Dependabot's, which execute a single job
+  # and never touch the tests.
+  schedule:
+    - cron: "0 6 * * 1"  # Mondays, 06:00 UTC
+  # So a red scheduled run can be re-checked without an empty commit.
+  workflow_dispatch:
 
 permissions:
   contents: read
