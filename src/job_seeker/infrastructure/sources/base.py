@@ -132,6 +132,7 @@ def salary_from_bounds(
     currency: str | None,
     currency_source: CurrencySource | None,
     period: SalaryPeriod | None,
+    note: str = "",
 ) -> SalaryRange | None:
     """A board's two pay figures as a `SalaryRange`, or None when it published none usable.
 
@@ -162,13 +163,16 @@ def salary_from_bounds(
         # The note says what happened rather than restating the pair as "200,000 - 100,000", which
         # reads as an ordinary range: a reader, and especially an agent, would parse it straight
         # back into the two figures this branch exists to withhold.
+        withheld = (
+            f"board published an inverted range "
+            f"({_figure_text(low)} to {_figure_text(high)}); figures withheld"
+        )
         return SalaryRange(
             currency=currency,
             currency_source=currency_source,
-            note=(
-                f"board published an inverted range "
-                f"({_figure_text(low)} to {_figure_text(high)}); figures withheld"
-            ),
+            # Both, when the board also published prose: its own words are the source, and the
+            # explanation says why no figures came with them.
+            note=f"{note} ({withheld})" if note else withheld,
         )
     return SalaryRange(
         minimum=low,
@@ -176,6 +180,7 @@ def salary_from_bounds(
         currency=currency,
         currency_source=currency_source,
         period=period,
+        note=note,
     )
 
 

@@ -50,6 +50,14 @@ Pre-1.0 and not yet depended on, so these breaks are taken now rather than carri
 
 ### Added
 
+- Remotive, the third board. Its `candidate_required_location` is a comma-separated place list, so
+  eligibility is structured rather than read from prose, and its free-text `salary` states the
+  period explicitly ("$120 - $170 /hour"), which is a surer signal than magnitude. Pay that cannot
+  be read confidently keeps the board's own words and reports no figures: on-target earnings are
+  not base pay, and "$31,2k" is European notation that a naive parse puts an order of magnitude
+  out. The API returns exactly 20 postings and ignores `limit`, `search` and `category`, while the
+  site lists thousands, so every run reports the board truncated.
+
 - `job-seeker find` prints a notice to stderr when a run was not exhaustive: a warning naming the
   boards that failed, or a quieter line when a scan was merely capped. JSON and HTML carry coverage
   in the report, but CSV is a flat table of jobs with nowhere to put it, so a failed board there was

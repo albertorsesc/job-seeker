@@ -9,7 +9,7 @@ job-seeker aggregates postings from several boards, works out whether you are el
 one, ranks what is left against your profile, and tells you honestly how much it managed to look
 at. It runs on your machine, from the command line or through a local AI agent over MCP.
 
-> **Status: early but working.** Two boards (Himalayas, RemoteOK), the full pipeline, a CLI, and an
+> **Status: early but working.** Three boards (Himalayas, RemoteOK, Remotive), the full pipeline, a CLI, and an
 > MCP server. Pre-1.0, so the profile schema and the payload shape can still change. More boards
 > are planned. Not on PyPI: see [Install](#install).
 
@@ -227,7 +227,7 @@ Adding a board is one adapter file plus one line in the registry. Nothing in the
 |---|---|---|---|
 | Himalayas | built | JSON API | Structured `locationRestrictions` and `timezoneRestrictions` per posting, which is what makes precise eligibility possible. Page size caps at 20 and filter params are ignored, so pagination plus client-side filtering |
 | RemoteOK | built | JSON API | First array element is legal boilerplate. No structured eligibility data, so its postings take the text path |
-| Remotive | planned | JSON API | Throttles under load and then ignores `search`/`category` |
+| Remotive | built | JSON API | `candidate_required_location` is a comma-separated place list, so eligibility is precise here too. Salary is free text with an explicit period. The API returns exactly 20 postings and ignores every parameter, so a run always reports `truncated` |
 | WeWorkRemotely | planned | RSS | Latest ~100. Title is `"Company: Role"` |
 | WorkingNomads | planned | RSS | Best effort; has returned empty. Must never break a run |
 | JobSpy | planned | Scraper | Indeed, LinkedIn, Glassdoor, Google. Heavy and rate-limit prone, so an optional extra |
@@ -236,7 +236,7 @@ ZipRecruiter is blocked by Cloudflare for scrapers and is not supported.
 
 ## Limitations worth knowing
 
-- **Two boards today.** Coverage is genuinely partial, and the engine tells you so on every run
+- **Three boards today.** Coverage is genuinely partial, and the engine tells you so on every run
   rather than implying otherwise.
 - **`remote-verify` means unverified.** When a board publishes no eligibility data and the text says
   nothing conclusive, the posting is shown with that status rather than hidden. Read those before

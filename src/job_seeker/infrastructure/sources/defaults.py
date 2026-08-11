@@ -11,6 +11,7 @@ from __future__ import annotations
 from job_seeker.infrastructure.sources import registry
 from job_seeker.infrastructure.sources.himalayas import HimalayasSource
 from job_seeker.infrastructure.sources.remoteok import RemoteOkSource
+from job_seeker.infrastructure.sources.remotive import RemotiveSource
 
 # Name -> factory for every built-in board. Adding a board is one line here plus its adapter.
 # Typed as SourceFactory, so mypy checks each entry satisfies the JobSource port with no runtime
@@ -18,6 +19,7 @@ from job_seeker.infrastructure.sources.remoteok import RemoteOkSource
 _BUILTINS: dict[str, registry.SourceFactory] = {
     "himalayas": HimalayasSource,
     "remoteok": RemoteOkSource,
+    "remotive": RemotiveSource,
 }
 
 
