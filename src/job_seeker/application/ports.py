@@ -34,7 +34,19 @@ class JobSource(Protocol):
 
     @property
     def name(self) -> str:
-        """Stable identifier, e.g. "himalayas". Selects the source and labels its coverage."""
+        """Stable identifier, e.g. "himalayas". Selects the source and labels its coverage.
+
+        Declared as a read-only property rather than `name: str`, and that is the *permissive*
+        form, not the strict one. A protocol variable is settable, so `name: str` would demand an
+        assignable attribute and reject any implementation whose name is read-only, which is what
+        every fake in the test suite is: their name arrives as a constructor argument.
+
+        Declared this way, both shapes conform, and each is right somewhere. A shipped adapter
+        uses a plain class attribute, because its name is a constant, it is the registry key, and
+        it is read off the class before any instance exists. A source whose name is instance state
+        uses a property. `tests/application/test_ports.py` pins both, so neither can be "tidied"
+        into the other.
+        """
         ...
 
     def is_available(self) -> bool:

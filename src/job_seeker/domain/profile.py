@@ -9,10 +9,20 @@ from __future__ import annotations
 
 import re
 
-from pydantic import BaseModel, Field, field_validator
+from pydantic import BaseModel, ConfigDict, Field, field_validator
+
+# A key the schema does not know is an ERROR, not something to skip. Pydantic ignores unknown keys
+# by default, and this profile is hand-written YAML whose whole purpose is to state rules. A real
+# profile carried `exclude_us_only: true`, `exclude_timezone_locked: true` and
+# `acceptable_timezone_offsets` from a superseded schema; all three were dropped in silence, so a
+# seeker who could not work in the United States was shown US-only roles as eligible and the
+# profile looked like it had loaded fine. A typo does the same thing. Fail loudly and name the key.
+_STRICT = ConfigDict(extra="forbid")
 
 
 class LocationProfile(BaseModel):
+    model_config = _STRICT
+
     country: str = "Worldwide"
     # UTC offset of the seeker's working timezone, e.g. -6 for Mexico City.
     timezone_utc_offset: float = 0.0
@@ -30,6 +40,8 @@ class EligibilityRules(BaseModel):
     constraint gets none invented for them. Empty is never "match everything" and never "match
     nothing".
     """
+
+    model_config = _STRICT
 
     # Region names (lower-cased) that count as "I may work here". Do not add a work mode such as
     # "remote": it is not a region, it appears in nearly every posting this engine ingests, and
@@ -68,6 +80,8 @@ class EligibilityRules(BaseModel):
 
 class Profile(BaseModel):
     """Machine-readable seeker profile parsed from the Markdown front matter."""
+
+    model_config = _STRICT
 
     name: str = "Anonymous"
     headline: str = ""

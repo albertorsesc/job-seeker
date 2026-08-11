@@ -2,10 +2,13 @@
 
 from __future__ import annotations
 
+from pathlib import Path
+
 import pytest
+import yaml
 from pydantic import ValidationError
 
-from job_seeker.domain.profile import EligibilityRules, Profile
+from job_seeker.domain.profile import EligibilityRules, LocationProfile, Profile
 
 
 class TestProfileShipsNoCandidateData:
@@ -142,3 +145,45 @@ class TestProfileConstruction:
         assert profile.location.timezone_utc_offset == -6.0
         assert profile.skills
         assert profile.eligibility.disqualifying_authorization_terms
+
+
+class TestAnUnknownKeyIsAnError:
+    """A profile is hand-written YAML whose entire purpose is to state rules, so a rule the schema
+    does not recognise must not be skipped.
+
+    Found in the wild rather than reasoned about. A real profile carried `exclude_us_only: true`,
+    `exclude_timezone_locked: true` and `acceptable_timezone_offsets` from a superseded schema.
+    Pydantic ignores unknown keys by default, so all three were dropped in silence, the profile
+    reported itself valid, and a seeker who cannot work in the United States was shown US-only
+    roles as eligible. That is precisely the failure this product exists to prevent.
+    """
+
+    def test_a_superseded_eligibility_key_is_rejected_by_name(self) -> None:
+        with pytest.raises(ValidationError) as caught:
+            EligibilityRules.model_validate({"exclude_us_only": True})
+        assert "exclude_us_only" in str(caught.value)
+
+    def test_a_typo_in_a_rule_is_rejected_rather_than_ignored(self) -> None:
+        """The same silence hides a misspelling, and a rule that does nothing looks exactly like a
+        rule that is working."""
+        with pytest.raises(ValidationError):
+            EligibilityRules.model_validate({"eligable_regions": ["mexico"]})
+
+    def test_a_typo_at_the_top_level_is_rejected_too(self) -> None:
+        with pytest.raises(ValidationError):
+            Profile.model_validate({"serch_terms": ["AI Engineer"]})
+
+    def test_a_typo_in_the_location_block_is_rejected_too(self) -> None:
+        with pytest.raises(ValidationError):
+            LocationProfile.model_validate({"timezone_offset": -6})
+
+    def test_every_documented_key_still_loads(self) -> None:
+        """The guard must reject what the schema does not know and nothing more, so the shipped
+        template has to survive it."""
+        # Resolved from this file, not the working directory. A relative path here passes when
+        # pytest is invoked from the repo root and fails anywhere else, which makes the test a
+        # statement about how it was run rather than about the template.
+        template = Path(__file__).resolve().parents[2] / "examples" / "profile.example.md"
+        text = template.read_text()
+        front = text.split("---")[1]
+        assert Profile.model_validate(yaml.safe_load(front)).name == "Jane Doe"

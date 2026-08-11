@@ -10,8 +10,11 @@ from __future__ import annotations
 
 from collections.abc import Callable
 
+import pytest
+
 from job_seeker.domain.models import Job
 from job_seeker.domain.profile import Profile
+from job_seeker.domain.services import relevance
 from job_seeker.domain.services.relevance import RelevanceFilter
 
 
@@ -45,6 +48,57 @@ class TestWantedSignals:
         assert _relevant(make_job(title="Anything At All"), [])
 
 
+class TestTermsWhosePunctuationIsTheMeaning:
+    """ "C++" used to split to "c", so a C++ seeker matched C, C# and C++ alike.
+
+    The reason field made it visible and nobody was looking: every one of those postings came back
+    saying "title matches 'c'". A single letter is never a useful search term and matches far too
+    much, so it is dropped and the punctuated phrase is kept whole instead.
+    """
+
+    @pytest.mark.parametrize(
+        "title,wanted",
+        [
+            pytest.param("C++ Developer", True, id="the-language-asked-for"),
+            pytest.param("C Developer", False, id="a-different-language"),
+            pytest.param("C# Developer", False, id="another-different-language"),
+            pytest.param("Embedded Engineer (C)", False, id="a-bare-c-in-parentheses"),
+        ],
+    )
+    def test_cplusplus_matches_only_cplusplus(
+        self, title: str, wanted: bool, make_job: Callable[..., Job]
+    ) -> None:
+        profile = Profile(role_include=["C++"])
+        assert _relevant(make_job(title=title), [], profile) is wanted
+
+    def test_the_reason_names_the_real_term_not_a_fragment(
+        self, make_job: Callable[..., Job]
+    ) -> None:
+        verdict = RelevanceFilter(Profile(role_include=["C++"])).assess(
+            make_job(title="Senior C++ Developer"), []
+        )
+        assert verdict.reason == "title matches 'c++'"
+
+    def test_a_leading_dot_term_matches_despite_starting_in_punctuation(
+        self, make_job: Callable[..., Job]
+    ) -> None:
+        """`\\b` needs a word character on its side, so a `\\b\\.net` pattern could never match."""
+        profile = Profile(role_include=[".NET"])
+        assert _relevant(make_job(title=".NET Developer"), [], profile)
+
+    def test_a_blank_term_contributes_nothing(self, make_job: Callable[..., Job]) -> None:
+        """A stray empty line in the profile YAML must not become a token that matches every
+        posting, which is the same failure the eligibility terms guard against."""
+        profile = Profile(role_include=["", "   ", "engineer"])
+        assert _relevant(make_job(title="Backend Engineer"), [], profile)
+        assert not _relevant(make_job(title="Aluminum Director"), [], profile)
+
+    def test_ordinary_multiword_terms_are_unaffected(self, make_job: Callable[..., Job]) -> None:
+        """Two-letter words like "ai" still count; only single characters are dropped."""
+        assert _relevant(make_job(title="Senior AI Engineer"), ["AI Engineer"])
+        assert not _relevant(make_job(title="Aluminum Director"), ["AI Engineer"])
+
+
 class TestExclusions:
     def test_a_role_exclude_word_drops_the_job_even_if_it_is_wanted(
         self, make_job: Callable[..., Job]
@@ -62,6 +116,19 @@ class TestExclusions:
         profile = Profile(role_exclude=["sales"])
         assert not _relevant(make_job(title="Sales Engineer"), ["engineer"], profile)
 
+    def test_a_job_that_trips_none_of_the_false_positive_terms_is_kept(
+        self, make_job: Callable[..., Job]
+    ) -> None:
+        """The ordinary case for a profile that sets these, and the one that was never exercised.
+
+        Every other false-positive test uses a job that matches, so the fall-through, where the
+        rule is configured and simply does not fire, went untested. A filter that dropped
+        everything once these were set would have passed the whole suite.
+        """
+        profile = Profile(false_positive_terms=["support agent", "booking agent"])
+        job = make_job(title="AI Engineer", description="Build retrieval pipelines.")
+        assert _relevant(job, ["engineer"], profile)
+
 
 class TestAssessAll:
     def test_pairs_every_job_with_a_verdict_in_order(self, make_job: Callable[..., Job]) -> None:
@@ -78,6 +145,43 @@ class TestAssessAll:
             ("Aluminum Director", False),
             ("ML Engineer", True),
         ]
+
+
+class TestThePatternCacheIsBounded:
+    """Compiled patterns are cached in a process global, keyed by word.
+
+    On the MCP path those words come from the agent's `terms`, and the server is long-lived, so an
+    unbounded cache grows for the life of the process: 5,000 distinct terms held 5,000 patterns.
+    The cache is worth keeping (a pattern is recompiled per job otherwise), so it is bounded rather
+    than removed.
+    """
+
+    def test_it_stops_growing_at_its_ceiling(self, make_job: Callable[..., Job]) -> None:
+        relevance._pattern.cache_clear()
+        filter_ = RelevanceFilter(Profile())
+        job = make_job(title="AI Engineer")
+        for index in range(relevance._PATTERN_CACHE_SIZE + 100):
+            filter_.assess(job, [f"agentterm{index}"])
+        assert relevance._pattern.cache_info().currsize <= relevance._PATTERN_CACHE_SIZE
+
+    def test_a_verdict_survives_the_eviction_of_its_own_pattern(
+        self, make_job: Callable[..., Job]
+    ) -> None:
+        """The cache is an optimization, so evicting an entry must not change an answer.
+
+        Without this, a bound could be "met" by a cache that quietly stopped matching once full.
+        """
+        filter_ = RelevanceFilter(Profile())
+        job = make_job(title="Senior Engineer")
+        before = filter_.assess(job, ["engineer"])
+
+        relevance._pattern.cache_clear()
+        for index in range(relevance._PATTERN_CACHE_SIZE + 100):
+            filter_.assess(job, [f"filler{index}"])
+
+        after = filter_.assess(job, ["engineer"])
+        assert (after.keep, after.reason) == (before.keep, before.reason)
+        assert after.keep
 
 
 class TestReasonIsRecorded:

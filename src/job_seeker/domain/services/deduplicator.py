@@ -20,7 +20,7 @@ from __future__ import annotations
 import re
 from datetime import UTC, datetime
 
-from job_seeker.domain.models import Job
+from job_seeker.domain.models import EligibilityHints, Job
 
 # Company-name suffixes that carry no identity, stripped so legal-form noise does not split a
 # match. Order-independent; matched as whole trailing tokens after punctuation is removed.
@@ -72,21 +72,101 @@ class Deduplicator:
     def dedupe(self, jobs: list[Job]) -> list[Job]:
         """One record per identity, preserving the order each identity was first seen.
 
-        Within a group the survivor is the freshest posting, then the richest: freshness first so
-        a stale duplicate cannot shadow a newer one and get filtered out later by age, richness as
-        the tiebreak so the record kept is the most complete of an equally recent set.
+        The representative is the freshest posting, then the richest: a re-post is the more current
+        description of the role, and richness breaks a tie so an equally recent pair keeps the
+        fuller record.
+
+        **The others are not discarded, they complete it.** Choosing a representative and throwing
+        the rest away lost real data: a copy posted an hour later with no salary beat one carrying
+        150,000, and the pay vanished from the answer. Boards publish different subsets of the same
+        posting, which is the whole reason to aggregate them, so a field the representative lacks
+        is filled from a sibling and a field it has is never overruled.
+
+        The representative's own identity is untouched: `url` and `source` keep pointing at the
+        posting a seeker would actually open. So a merged record can carry a salary its own board
+        did not publish, which is the point, and is why `source` names the representative rather
+        than claiming provenance for every field.
         """
-        best: dict[str, Job] = {}
+        groups: dict[str, list[Job]] = {}
         order: list[str] = []
         for job in jobs:
             key = self.identity(job)
-            incumbent = best.get(key)
-            if incumbent is None:
-                best[key] = job
+            if key not in groups:
+                groups[key] = []
                 order.append(key)
-            elif _rank(job) > _rank(incumbent):
-                best[key] = job
-        return [best[key] for key in order]
+            groups[key].append(job)
+        return [_merged(groups[key]) for key in order]
+
+
+def _merged(group: list[Job]) -> Job:
+    """The group's representative, completed from its siblings. A single job is returned as-is."""
+    if len(group) == 1:
+        return group[0]
+    winner, *rest = sorted(group, key=_rank, reverse=True)
+    filled = {
+        field: value
+        for field in _COMPLETABLE
+        if not _is_present(getattr(winner, field))
+        for value in [_first_present(rest, field)]
+        if value is not None
+    }
+    hints = _merged_hints(winner, rest)
+    if hints is not None:
+        filled["hints"] = hints
+    return winner.model_copy(update=filled) if filled else winner
+
+
+# Fields a sibling may complete. Deliberately excludes `title`, `company`, `url` and `source`:
+# the first two are the identity every member of the group shares, and the last two must keep
+# describing the posting the representative actually is.
+_COMPLETABLE = ("description", "location", "salary", "seniority", "employment_type", "posted_at")
+
+
+def _is_present(value: object) -> bool:
+    """Whether a field carries a claim. An empty string and None are both "nothing said"."""
+    if value is None:
+        return False
+    return value.strip() != "" if isinstance(value, str) else True
+
+
+def _first_present(jobs: list[Job], field: str) -> object | None:
+    return next((v for job in jobs for v in [getattr(job, field)] if _is_present(v)), None)
+
+
+def _merged_hints(winner: Job, rest: list[Job]) -> EligibilityHints | None:
+    """The winner's hints with each unknown half filled from a sibling, or None if nothing to add.
+
+    Filled per half, not wholesale: the two restrictions are independent claims, and `None` means
+    "this board said nothing" while `()` means "it said there is no restriction". A board that
+    actually stated something is never overruled by one that did not, so this only ever turns an
+    unknown into a known.
+    """
+    location = winner.hints.location_restrictions
+    timezone = winner.hints.timezone_restrictions
+    if location is None:
+        location = next(
+            (
+                j.hints.location_restrictions
+                for j in rest
+                if j.hints.location_restrictions is not None
+            ),
+            None,
+        )
+    if timezone is None:
+        timezone = next(
+            (
+                j.hints.timezone_restrictions
+                for j in rest
+                if j.hints.timezone_restrictions is not None
+            ),
+            None,
+        )
+    if (location, timezone) == (
+        winner.hints.location_restrictions,
+        winner.hints.timezone_restrictions,
+    ):
+        return None
+    return EligibilityHints(location_restrictions=location, timezone_restrictions=timezone)
 
 
 def _rank(job: Job) -> tuple[datetime, int]:
@@ -94,7 +174,7 @@ def _rank(job: Job) -> tuple[datetime, int]:
     richness = sum(
         (
             bool(job.description.strip()),
-            bool(job.salary.strip()),
+            job.salary is not None,
             bool(job.seniority.strip()),
             job.hints.location_restrictions is not None,
         )

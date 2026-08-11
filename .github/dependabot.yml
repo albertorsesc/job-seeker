@@ -13,3 +13,14 @@ updates:
       interval: "weekly"
     commit-message:
       prefix: "ci"
+
+  # Python dependencies, read from the committed uv.lock. Security alerts cover known
+  # vulnerabilities on a public repo already; this is the other half, a version bump arriving as a
+  # PR that runs the full matrix, so an incompatible release is a red check rather than a surprise
+  # on someone's next clean install.
+  - package-ecosystem: "uv"
+    directory: "/"
+    schedule:
+      interval: "weekly"
+    commit-message:
+      prefix: "deps"

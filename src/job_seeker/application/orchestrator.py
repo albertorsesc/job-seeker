@@ -12,17 +12,20 @@ the list and hands it in.
 from __future__ import annotations
 
 from collections import Counter
+from collections.abc import Callable
 from concurrent.futures import ThreadPoolExecutor
 from datetime import UTC, datetime, timedelta
 
 from job_seeker.application.ports import JobSource
 from job_seeker.domain.models import (
+    STATED_STATUSES,
     EligibilityStatus,
     Job,
     Relevance,
     ScoredJob,
     SearchQuery,
     SearchResult,
+    SortOrder,
     SourceCoverage,
     SourceResult,
 )
@@ -94,13 +97,20 @@ class JobSeeker:
         suitable = [
             scored
             for job, relevance in assessed
-            if relevance.keep and (scored := self._evaluate(job, relevance)) is not None
+            if relevance.keep and (scored := self._evaluate(job, relevance, query)) is not None
         ]
-        # Rank on the raw integer sum, not the normalized value: same order within a run (the
-        # total is constant), but exact, so ordering never turns on a rounded float.
-        ranked = sorted(suitable, key=lambda scored: scored.fit.raw, reverse=True)
+        ranked = sorted(suitable, key=_ordering(query.sort), reverse=True)
+        # The cap is applied after ranking, which is the whole point of having it: asking for five
+        # results now returns the five best, where the old per-source depth returned five of
+        # whatever happened to be fetched first.
+        capped = ranked[: query.max_results] if query.max_results is not None else ranked
         return SearchResult(
-            query=query, jobs=ranked, coverage=self._coverage(source_results, ranked)
+            # Coverage counts what each board *matched*, before the cap, so `sum(kept)` exceeding
+            # `len(jobs)` is exactly how a caller sees that the cap bit. Counting post-cap would
+            # make a board that contributed twenty matches look like it contributed two.
+            query=query,
+            jobs=capped,
+            coverage=self._coverage(source_results, ranked),
         )
 
     def _fetch_all(self, query: SearchQuery) -> list[SourceResult]:
@@ -123,7 +133,7 @@ class JobSeeker:
         except Exception as exc:  # noqa: BLE001 - deliberately catch-all: an adapter may do anything
             return SourceResult(source=source.name, error=f"{type(exc).__name__}: {exc}")
 
-    def _evaluate(self, job: Job, relevance: Relevance) -> ScoredJob | None:
+    def _evaluate(self, job: Job, relevance: Relevance, query: SearchQuery) -> ScoredJob | None:
         """Score and classify one job; return a ScoredJob, or None if the seeker cannot hold it.
 
         The relevance verdict is decided upstream (it gates whether we score at all) and passed in
@@ -132,11 +142,16 @@ class JobSeeker:
         fit = self._scorer.score(job)
         eligibility = self._classifier.classify(job)
         scored = ScoredJob(job=job, fit=fit, relevance=relevance, eligibility=eligibility)
-        return scored if self._is_suitable(scored) else None
+        return scored if self._is_suitable(scored, query) else None
 
-    def _is_suitable(self, scored: ScoredJob) -> bool:
+    def _is_suitable(self, scored: ScoredJob, query: SearchQuery) -> bool:
         eligibility = scored.eligibility
         if not eligibility.is_eligible:
+            return False
+        # A per-search narrowing on top of the profile's standing preference. `stated_only` drops
+        # anything the board did not affirmatively clear, which is the difference between "here is
+        # a lead" and "here is a job you can hold".
+        if query.stated_only and eligibility.status not in STATED_STATUSES:
             return False
         # An unverifiable posting counts only if the profile opts in (card 013): is_eligible alone
         # treats REMOTE_UNVERIFIED as holdable, so the opt-out is applied here as an active filter.
@@ -163,3 +178,18 @@ class JobSeeker:
             )
             for result in source_results
         ]
+
+
+def _ordering(order: SortOrder) -> Callable[[ScoredJob], tuple[int, ...]]:
+    """The sort key for a ranking order.
+
+    Both rank on `fit.raw`, the exact integer, rather than the normalized value: the same order
+    within a run, but ordering never turns on a rounded float. `CONFIDENCE` puts certainty first
+    and uses fit to break ties inside each tier, so it groups rather than reshuffles.
+    """
+    if order is SortOrder.CONFIDENCE:
+        return lambda scored: (
+            int(scored.eligibility.status in STATED_STATUSES),
+            scored.fit.raw,
+        )
+    return lambda scored: (scored.fit.raw,)

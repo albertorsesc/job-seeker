@@ -19,9 +19,9 @@ class TestSearchResultIsComplete:
     def test_a_run_where_no_source_executed_is_not_complete(self) -> None:
         """The regression: `any([])` is False, so an unguarded `not any(...)` calls the most
         incomplete run possible complete, and it looks exactly like "no jobs matched"."""
-        assert SearchResult(query=SearchQuery()).is_complete is False
+        assert SearchResult(query=SearchQuery()).all_sources_ran is False
 
-    def test_a_run_where_every_source_ran_fully_is_complete(self) -> None:
+    def test_a_run_where_every_source_ran_fully_is_healthy_and_exhaustive(self) -> None:
         result = SearchResult(
             query=SearchQuery(),
             coverage=[
@@ -29,7 +29,7 @@ class TestSearchResultIsComplete:
                 SourceCoverage(source="remotive", scanned=40, kept=1),
             ],
         )
-        assert result.is_complete is True
+        assert (result.all_sources_ran and result.fully_scanned) is True
 
     def test_one_failed_source_makes_the_run_incomplete(self) -> None:
         result = SearchResult(
@@ -39,7 +39,7 @@ class TestSearchResultIsComplete:
                 SourceCoverage(source="remoteok", error="HTTP 503"),
             ],
         )
-        assert result.is_complete is False
+        assert (result.all_sources_ran and result.fully_scanned) is False
 
     def test_a_truncated_scan_makes_the_run_incomplete(self) -> None:
         """Truncation is not failure, but it is not completeness either: a budget stopped the
@@ -48,7 +48,7 @@ class TestSearchResultIsComplete:
             query=SearchQuery(),
             coverage=[SourceCoverage(source="himalayas", scanned=1000, kept=12, truncated=True)],
         )
-        assert result.is_complete is False
+        assert (result.all_sources_ran and result.fully_scanned) is False
 
 
 class TestFailed:
@@ -70,19 +70,22 @@ class TestDerivedValuesCrossTheWire:
     reimplements the domain rule and they drift.
     """
 
-    def test_is_complete_is_serialized(self) -> None:
-        assert "is_complete" in SearchResult(query=SearchQuery()).model_dump()
+    def test_both_coverage_facts_are_serialized(self) -> None:
+        assert "all_sources_ran" in SearchResult(query=SearchQuery()).model_dump()
 
     def test_failed_is_serialized(self) -> None:
         assert SourceResult(source="x").model_dump()["failed"] is False
 
-    def test_is_complete_survives_a_json_round_trip(self) -> None:
+    def test_both_coverage_facts_survive_a_json_round_trip(self) -> None:
         result = SearchResult(
             query=SearchQuery(), coverage=[SourceCoverage(source="x", scanned=1, kept=1)]
         )
-        assert '"is_complete":true' in result.model_dump_json().replace(" ", "")
+        wire = result.model_dump_json().replace(" ", "")
+        assert '"all_sources_ran":true' in wire
+        assert '"fully_scanned":true' in wire
 
     def test_the_serialization_schema_advertises_the_verdict(self) -> None:
         """`computed_field` puts it in the schema, so the MCP tool contract documents it."""
         schema = SearchResult.model_json_schema(mode="serialization")
-        assert "is_complete" in schema["properties"]
+        assert "all_sources_ran" in schema["properties"]
+        assert "fully_scanned" in schema["properties"]

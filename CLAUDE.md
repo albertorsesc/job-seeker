@@ -120,8 +120,19 @@ a test, not a promise.
 - **application/** holds use cases and declares, in `ports.py`, what it needs the outside world to
   do. It never imports infrastructure.
 - **infrastructure/** holds everything that touches the outside world, on both sides: driven
-  adapters (boards, reporters, config) and driving adapters (`entrypoints`, which is also the only
-  place allowed to name concrete adapters and wire them up).
+  adapters (boards, reporters, config) and driving adapters (`entrypoints`).
+
+**The composition root is spread across infrastructure, and the shape is deliberate.** Each driven
+package owns the catalogue of its own adapters, because a list of boards belongs beside the boards
+rather than inside a driving adapter: `sources/defaults.py` names the boards, `reporting/__init__.py`
+names the reporters. `entrypoints/` names the concrete profile provider, selects from those
+catalogues, and calls `register_builtins()` once at startup. Nothing outside those three places may
+name a concrete adapter.
+
+Registration happens at startup and nowhere else. A library function that registers on the way past
+mutates global state on whatever thread its caller happened to be on, which is exactly what
+`sources/registry.py` warns against, and it makes the shared search path depend on state its
+signature does not mention.
 
 **Why the services are not ports.** A port exists to cross the boundary. `JobSource`, `Reporter` and
 `ProfileProvider` cross it: HTTP, a file, a rendered artifact. A scorer does not; it is pure

@@ -8,8 +8,16 @@ from __future__ import annotations
 
 from datetime import UTC, datetime
 from enum import StrEnum
+from typing import Self
 
-from pydantic import BaseModel, ConfigDict, Field, computed_field, field_validator
+from pydantic import (
+    BaseModel,
+    ConfigDict,
+    Field,
+    computed_field,
+    field_validator,
+    model_validator,
+)
 
 
 class EligibilityStatus(StrEnum):
@@ -39,6 +47,32 @@ ELIGIBLE_STATUSES: frozenset[EligibilityStatus] = frozenset(
 )
 
 
+# Statuses where a board affirmatively said the seeker may hold the role. `remote-verify` is
+# deliberately absent: it means nobody said, which is a lead rather than a fact.
+#
+# Two tiers, not four. An earlier version ranked home-based above global above regional, on the
+# reasoning that a directly named country is surer than one reached through the region map. Live
+# data killed it: that ordering put a 3% Node.js role above a 26% Senior AI Engineer, because the
+# difference between those statuses is geography, not confidence, and all three are equally
+# stated. What a seeker actually wants separated is "a board cleared me" from "nobody said".
+STATED_STATUSES: frozenset[EligibilityStatus] = frozenset(
+    {EligibilityStatus.HOME_BASED, EligibilityStatus.GLOBAL, EligibilityStatus.REGIONAL}
+)
+
+
+class SortOrder(StrEnum):
+    """How to rank what survived the filters.
+
+    Neither order is right for everyone, which is why this is a choice rather than a default
+    change. `FIT` answers "what suits my skills"; a 26% posting the board never cleared can outrank
+    a 3% one it did. `CONFIDENCE` puts every posting a board affirmatively cleared above every
+    posting nobody did, and sorts by fit inside each group.
+    """
+
+    FIT = "fit"
+    CONFIDENCE = "confidence"
+
+
 class SearchQuery(BaseModel):
     """A request for postings, interpreted by each source in its own dialect."""
 
@@ -47,40 +81,206 @@ class SearchQuery(BaseModel):
     terms: list[str] = Field(default_factory=list)
     location: str | None = None
     remote: bool = True
-    # Bounded because an MCP tool exposes these to an agent that picks the numbers. Unbounded,
-    # a large value walks every page of a six-figure feed and a negative one means whatever
-    # each adapter's slicing happens to do.
-    max_results_per_source: int = Field(default=50, ge=1, le=1000)
+    # How deep to read each board, NOT how many results to return. It is applied by the adapter
+    # while fetching, so it bounds the candidate pool *before* anything is ranked: lowering it does
+    # not trim the answer, it shrinks what the answer is chosen from, and the best-fitting posting
+    # may simply never be fetched. It was called `max_results_per_source` and exposed as `--limit`,
+    # which is what a caller reaches for when they want a shorter list, and they got a worse one.
+    #
+    # Bounded because an MCP tool exposes it to an agent that picks the number. Unbounded, a large
+    # value walks every page of a six-figure feed, and a negative one means whatever each adapter's
+    # slicing happens to do.
+    scan_depth_per_source: int = Field(default=50, ge=1, le=1000)
+    # How many ranked results to return. None means all of them. This is the one a caller wanting a
+    # shorter list actually wants, and it applies after ranking, so it keeps the best rather than
+    # the first fetched.
+    max_results: int | None = Field(default=None, ge=1)
     max_age_days: int | None = Field(default=30, ge=1)
+    # Drop postings whose eligibility nobody stated, for this search only. The profile's
+    # `include_unverified` is the standing preference; this narrows further and never widens, so a
+    # seeker who has already opted out of unverified postings cannot accidentally opt back in.
+    stated_only: bool = False
+    sort: SortOrder = SortOrder.FIT
 
 
+# Design notes for EligibilityHints, kept out of the docstring because that text is published in
+# the MCP schema and read by an agent every session.
+#
+# - Most boards publish no structured eligibility data, so None is the default. An earlier shape
+#   defaulted to [], which made "the board has no such field" indistinguishable from "the board
+#   declared the role open to everyone", and silently promoted every posting from those boards to
+#   unrestricted. Empty is a claim; absent is not.
+# - Frozen, and tuples rather than lists, so these are genuinely immutable. `frozen=True` alone
+#   blocks rebinding the attribute but not `hints.location_restrictions.append(...)`, and leaves
+#   the model unhashable. Tuples close both. An adapter converts at construction, which is the
+#   right place to mark mutable wire data becoming a settled fact. The JSON wire is an array.
 class EligibilityHints(BaseModel):
-    """What a board published about who may hold a role.
+    """What the board itself stated about who may hold the role.
 
-    Three states, and collapsing any two of them is a bug the whole eligibility layer is built
-    to avoid:
-
-    - `None`: the board said nothing. Fall back to reading the posting text.
-    - `[]`: the board said explicitly there is no restriction. The role is open.
-    - `["united states", ...]`: restricted to these.
-
-    Most boards publish no structured eligibility data, so `None` is the default. Defaulting to
-    `[]` instead, as an earlier shape did, made "the board has no such field" indistinguishable
-    from "the board declared the role open to everyone", and silently promoted every posting
-    from those boards to unrestricted. Empty is a claim; absent is not.
-
-    Frozen, and tuples rather than lists, so these are genuinely immutable: they are facts a
-    board reported, not values the pipeline revises. `frozen=True` alone would block rebinding
-    the attribute but not `hints.location_restrictions.append(...)`, and it would leave the model
-    unhashable. Tuples close both. An adapter turns a board's list into a tuple at construction,
-    which is the right place to mark mutable wire data becoming a settled fact. The JSON wire is
-    an array regardless.
+    Three distinct states per field, and they must not be conflated: `null` means the board said
+    nothing (the engine then reads the posting text instead), `[]` means it stated there is no
+    restriction, and a populated list means the role is restricted to those places or UTC offsets.
     """
 
     model_config = ConfigDict(frozen=True)
 
     location_restrictions: tuple[str, ...] | None = None
     timezone_restrictions: tuple[float, ...] | None = None
+
+
+class CurrencySource(StrEnum):
+    """Whether a board stated the currency or its adapter supplied it.
+
+    Both arrive on the wire as three identical letters, so without this a consumer cannot tell a
+    fact from an inference. RemoteOK publishes no currency field at all and its adapter asserts USD
+    from board convention; Himalayas publishes one per posting. An agent comparing 160,000 EUR
+    against 170,000 USD is already on thin ice, and it should at least know which of the two units
+    the engine was told and which it decided.
+    """
+
+    PUBLISHED = "published"  # the board stated it
+    ASSUMED = "assumed"  # the adapter supplied it from what it knows of the board
+
+
+class SalaryPeriod(StrEnum):
+    """The unit a board quotes its pay figures in.
+
+    Boards mix these freely and most publish no field saying which. Himalayas returns 85 and
+    146,000 side by side in the same currency, so a figure without its period is not comparable to
+    anything, and a pipeline that sorts on the bare number ranks an $85/hour role below a $60,000
+    one. Each adapter declares how its own board expresses the period; the conversion lives here.
+    """
+
+    HOUR = "hour"
+    DAY = "day"
+    WEEK = "week"
+    MONTH = "month"
+    YEAR = "year"
+
+
+# Periods per year, for normalizing figures onto one comparable basis.
+#
+# **These assume full-time.** 2,080 hours is 40 hours x 52 weeks, 260 days is 5 x 52. A part-time
+# posting quoted hourly annualizes as though it were full-time, which overstates it. That is why
+# the annualized figures are exposed as separate fields rather than replacing what the board
+# published: the board's own numbers stay untouched and the derived ones are labelled derived.
+_PERIODS_PER_YEAR: dict[SalaryPeriod, float] = {
+    SalaryPeriod.HOUR: 2080.0,
+    SalaryPeriod.DAY: 260.0,
+    SalaryPeriod.WEEK: 52.0,
+    SalaryPeriod.MONTH: 12.0,
+    SalaryPeriod.YEAR: 1.0,
+}
+
+
+# Design notes for SalaryRange, deliberately comments rather than docstring. The class docstring
+# is published verbatim in the MCP tool's JSON schema and read by an agent on every session, so it
+# states what the type is; why it is shaped this way belongs to whoever maintains it.
+#
+# - Two boards report pay structured (Himalayas minSalary/maxSalary/currency, RemoteOK
+#   salary_min/salary_max). This used to be flattened to a display string in the adapter, which
+#   threw the numbers away irreversibly: a later reader had to re-parse a string we formatted
+#   ourselves. Structure in, presentation at the edge, the direction the rest of the pipeline runs.
+# - Every field is optional because boards disagree about what they know. A floor with no ceiling
+#   is a different fact from a fixed rate.
+# - Frozen, like EligibilityHints: a board reported this, the pipeline does not revise it.
+# - Absence lives on `Job.salary`, which is None when the board said nothing at all, so "said
+#   something unusable" and "said nothing" stay distinct.
+# - `float`, not `Decimal`, and that is a decision. Nothing here accumulates error: figures are
+#   carried, compared, and multiplied once by an integer factor. The cost is accepted and visible,
+#   a CSV cell reads `150000.0`. Pydantic serializes Decimal to a JSON *string*, which would put
+#   `"150000.0"` on the MCP wire and destroy the numeric comparison this shape exists to enable.
+#   Revisit only if something ever aggregates pay across postings.
+class SalaryRange(BaseModel):
+    """Pay for one posting, as the board published it, plus a comparable annual equivalent.
+
+    `minimum`/`maximum` are the board's own figures in `currency`, quoted per `period`. Any of them
+    may be null when the board did not say. Compare postings on `annual_minimum`/`annual_maximum`,
+    never on the raw figures: boards mix hourly and annual pay freely, so 85 and 146,000 can be the
+    same currency on the same page. The annual figures are null when the period is unknown, and
+    assume full time when it is.
+
+    `annual_minimum` and `annual_maximum` arrive in the payload but are absent from this schema,
+    because the MCP SDK publishes a validation-mode schema and pydantic omits computed fields from
+    it. They are there; read them.
+    """
+
+    model_config = ConfigDict(frozen=True)
+
+    minimum: float | None = Field(default=None, ge=0)
+    maximum: float | None = Field(default=None, ge=0)
+    # None when no currency is known. `""` would be a second way to say the same thing, and this
+    # model already carries a docstring about never letting empty stand in for absent.
+    currency: str | None = None
+    # Where the currency came from. Absent exactly when the currency is.
+    currency_source: CurrencySource | None = None
+    # What the figures are quoted per. None means the board did not say and its adapter could not
+    # establish it, which is a real and common answer: it is why the annualized fields below are
+    # nullable rather than guessed.
+    period: SalaryPeriod | None = None
+    # Why the figures are what they are, in words, for the cases numbers cannot express. Two
+    # things reach here: a board that publishes prose instead of a number ("Competitive, DOE"),
+    # and a board that published figures this pipeline refused to trust, which says so explicitly
+    # rather than restating them as a range someone would parse straight back out.
+    #
+    # Named `note`, not `raw`: `FitScore.raw` in this same module means the unnormalized number,
+    # and one name meaning two things across sibling models is how a reader comes to expect
+    # figures here.
+    note: str = ""
+
+    @computed_field  # type: ignore[prop-decorator]
+    @property
+    def annual_minimum(self) -> float | None:
+        """The lower bound as a yearly figure, or None when the period is unknown.
+
+        Serialized, because the consumer that most needs a comparable number is an agent on the
+        far side of the MCP wire, and it cannot convert without knowing the full-time assumption
+        baked into `_PERIODS_PER_YEAR`. None is the honest answer for an unknown period: a
+        magnitude alone cannot be compared, and inventing a basis is how an hourly rate comes to
+        be ranked as a salary.
+        """
+        return self._annualized(self.minimum)
+
+    @computed_field  # type: ignore[prop-decorator]
+    @property
+    def annual_maximum(self) -> float | None:
+        """The upper bound as a yearly figure, or None when the period is unknown."""
+        return self._annualized(self.maximum)
+
+    def _annualized(self, value: float | None) -> float | None:
+        if value is None or self.period is None:
+            return None
+        return round(value * _PERIODS_PER_YEAR[self.period], 2)
+
+    @model_validator(mode="after")
+    def _says_something(self) -> Self:
+        """Reject a range that carries no claim at all, and one that runs backwards.
+
+        Absence belongs on `Job.salary`, which is `None` when the board said nothing. Without this,
+        `SalaryRange()` also constructs, so there are two ways to spell "no pay information" and
+        the docstring above is a convention rather than a guarantee. That is exactly the state
+        `EligibilityHints` exists as a warning about, and the dedup richness score already reads
+        presence of this object as a signal, so an empty one would count as rich.
+
+        An upper bound below the lower one is not a range either: letting it through would make
+        every consumer decide which of the two numbers to believe. Equal bounds are a fixed rate,
+        not an error.
+        """
+        if (self.currency is None) != (self.currency_source is None):
+            raise ValueError(
+                "currency and currency_source are set together or not at all; a currency with no "
+                "stated origin cannot be told apart from one the engine invented."
+            )
+        if self.minimum is None and self.maximum is None and not self.note:
+            raise ValueError(
+                "a SalaryRange must carry a figure or the board's own text; "
+                "use None on Job.salary to mean the board said nothing."
+            )
+        if self.minimum is not None and self.maximum is not None and self.maximum < self.minimum:
+            raise ValueError(
+                f"salary maximum ({self.maximum}) is below the minimum ({self.minimum})."
+            )
+        return self
 
 
 class Job(BaseModel):
@@ -96,7 +296,9 @@ class Job(BaseModel):
     source: str
     description: str = ""
     location: str = ""
-    salary: str = ""
+    # None means the board published nothing about pay. See SalaryRange for why that is not the
+    # same as a range with no numbers in it.
+    salary: SalaryRange | None = None
     posted_at: datetime | None = None
     seniority: str = ""
     employment_type: str = ""
@@ -124,19 +326,18 @@ class Job(BaseModel):
         return f"{self.title}\n{self.description}\n{self.location}".lower()
 
 
+# Design notes for FitScore, kept out of the published schema.
+#
+# - `value` is normalized because a raw sum could not be compared: 10 was a strong fit for a
+#   four-skill profile and weak for a thirty-skill one, and a caller thresholding it had no way to
+#   learn the scale, least of all an agent that only ever sees the number.
+# - `raw` is the exact integer the pipeline ranks on, so ordering never turns on float rounding.
 class FitScore(BaseModel):
-    """How well a posting matches the seeker's profile signals.
+    """How well a posting matches the seeker's weighted profile signals.
 
-    `value` is normalized to 0.0-1.0: the weight this posting matched over the total weight the
-    profile could award. It means the same thing across profiles and across edits to one, so 0.5
-    is always "half your weighted signal matched". A raw sum could not: 10 was a strong fit for a
-    four-skill profile and a weak one for a thirty-skill profile, and a caller thresholding or
-    comparing it had no way to learn the scale, least of all an agent on the far side of the MCP
-    wire that only ever sees the number.
-
-    `raw` keeps that sum, an exact integer the pipeline ranks on so ordering never depends on
-    float rounding. `matched` records which pattern contributed which weight, so a report can
-    explain the number ("python +3, rag +2") instead of only stating it.
+    `value` is 0.0-1.0, the share of the profile's total available weight this posting matched, so
+    it means the same thing across different profiles. `matched` names which of the seeker's skill
+    patterns contributed which weight, so the score can be explained rather than just stated.
     """
 
     value: float = Field(default=0.0, ge=0.0, le=1.0)
@@ -159,7 +360,12 @@ class Relevance(BaseModel):
 
 
 class Eligibility(BaseModel):
-    """Whether, and how, the seeker can hold this role."""
+    """Whether, and how, the seeker can hold this role.
+
+    Carries a derived `is_eligible` boolean in the payload that is absent from this schema (the SDK
+    publishes a validation-mode schema, which omits computed fields). Use it rather than
+    reimplementing which of the seven statuses are holdable.
+    """
 
     status: EligibilityStatus
     # Required, not defaulted: the reason is the product. The classifier sets one on every path,
@@ -175,8 +381,12 @@ class Eligibility(BaseModel):
         Which of seven statuses are holdable is domain knowledge, and the consumers that most
         need it are on the far side of a wire: an MCP agent receiving `{"status":
         "remote-verify"}` would otherwise have to reimplement ELIGIBLE_STATUSES to read it.
-        `computed_field` also puts it in the serialization JSON schema, so the MCP tool
-        contract documents it to the agent for free.
+
+        It is in the payload, not in the tool's published schema. A computed field appears in the
+        serialization schema only, and FastMCP builds its output schema in validation mode, where
+        computed fields are absent. `find_jobs` is annotated `-> dict[str, Any]` besides, so no
+        output schema is published at all. The agent receives this field and is not told to expect
+        it, which is worth fixing on the tool, not here.
         """
         return self.status in ELIGIBLE_STATUSES
 
@@ -246,6 +456,12 @@ class SourceCoverage(SourceOutcome):
 class SearchResult(BaseModel):
     """A finished run: the ranked postings, and the truth about how they were found.
 
+    Two derived booleans arrive in the payload and are NOT in this schema, because the MCP SDK
+    publishes a validation-mode schema and pydantic omits computed fields from it. Read them:
+    `all_sources_ran` is false when a board failed, which means whole categories of job are missing
+    from `jobs`; `fully_scanned` is false when a board was read only to `scan_depth_per_source`,
+    which is the ordinary case. Say so when reporting results if the first is false.
+
     Coverage travels with the jobs rather than going to a log, because the consumer that most
     needs it is an agent on the far end of an MCP call which never sees stderr. A run where
     three of five boards failed must not be indistinguishable from a healthy one, or the
@@ -259,12 +475,29 @@ class SearchResult(BaseModel):
 
     @computed_field  # type: ignore[prop-decorator]
     @property
-    def is_complete(self) -> bool:
-        """True only when at least one source ran, and every source that ran ran fully.
+    def all_sources_ran(self) -> bool:
+        """True when at least one source ran and none of them failed.
 
-        The `bool(self.coverage)` guard is the whole point: `any([])` is False, so without it
-        a run where zero sources executed, the most incomplete run there is, would report
-        itself as complete. That is the exact failure this class exists to prevent, and it is
-        silent, because an empty result with `is_complete=True` looks like "no jobs matched".
+        The rare fact, and the alarming one. A board being unreachable means whole categories of
+        job are missing from the answer, and nothing else in the payload says so.
+
+        The `bool(self.coverage)` guard is the whole point: `any([])` is False, so without it a run
+        where zero sources executed, the most incomplete run there is, would report itself as
+        healthy. That failure is silent, because an empty result that claims to be complete looks
+        exactly like "nothing matched".
         """
-        return bool(self.coverage) and not any(c.failed or c.truncated for c in self.coverage)
+        return bool(self.coverage) and not any(c.failed for c in self.coverage)
+
+    @computed_field  # type: ignore[prop-decorator]
+    @property
+    def fully_scanned(self) -> bool:
+        """True when every source was read to the end rather than capped.
+
+        The common fact, and a mild one. `max_results_per_source` defaults to 50 against a feed of
+        ~98,000, so an ordinary healthy run is not fully scanned and never will be.
+
+        Split from `all_sources_ran` because one boolean covering both was false on every single
+        run, which is the same as being absent: a reader learns to skip it, and then skips it on
+        the day a board is actually down. Two facts, two names, and the rare one stays rare.
+        """
+        return bool(self.coverage) and not any(c.truncated for c in self.coverage)

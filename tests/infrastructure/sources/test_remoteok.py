@@ -14,7 +14,12 @@ from typing import Any
 import httpx
 import respx
 
-from job_seeker.domain.models import SearchQuery, SourceResult
+from job_seeker.domain.models import (
+    CurrencySource,
+    SalaryPeriod,
+    SearchQuery,
+    SourceResult,
+)
 from job_seeker.infrastructure.sources.remoteok import RemoteOkSource
 
 API = "https://remoteok.com/api"
@@ -57,7 +62,7 @@ def _fetch(
     with respx.mock:
         respx.get(API).mock(return_value=httpx.Response(200, json=_payload(*jobs)))
         return _source().fetch(
-            SearchQuery(max_results_per_source=max_results, max_age_days=max_age_days)
+            SearchQuery(scan_depth_per_source=max_results, max_age_days=max_age_days)
         )
 
 
@@ -92,9 +97,51 @@ class TestNormalization:
         assert result.jobs == []
         assert not result.failed
 
-    def test_a_zero_salary_renders_as_empty(self) -> None:
-        job = _fetch([_job(salary_min=0, salary_max=0)]).jobs[0]
-        assert job.salary == ""
+    def test_a_zero_salary_is_unspecified_not_a_salary_of_zero(self) -> None:
+        """RemoteOK documents 0 as "unspecified", so it must not become a figure."""
+        assert _fetch([_job(salary_min=0, salary_max=0)]).jobs[0].salary is None
+
+    def test_the_board_figures_survive_as_numbers_with_usd_asserted(self) -> None:
+        """The /api endpoint publishes no currency field, so the adapter asserts USD. That claim
+        belongs to the adapter that knows the board, not to a shared formatter."""
+        salary = _fetch([_job(salary_min=120000, salary_max=160000)]).jobs[0].salary
+        assert salary is not None
+        assert (salary.minimum, salary.maximum, salary.currency) == (120000, 160000, "USD")
+
+    def test_the_board_period_is_declared_annual(self) -> None:
+        """RemoteOK publishes no period field, so the adapter declares one, the same kind of claim
+        as the USD. Thin evidence, recorded as such in the adapter: a live sample had pay on 1 of
+        100 records, 50,000-210,000, consistent with annual."""
+        salary = _fetch([_job(salary_min=120000, salary_max=160000)]).jobs[0].salary
+        assert salary is not None
+        assert salary.period is SalaryPeriod.YEAR
+        assert salary.annual_minimum == 120000
+
+    def test_the_currency_is_marked_assumed_because_this_board_never_states_it(self) -> None:
+        """The /api endpoint has no currency field, so USD is this adapter's inference. On the wire
+        it is three letters identical to a published one, and a consumer comparing across
+        currencies deserves to know which it is looking at."""
+        salary = _fetch([_job(salary_min=120000, salary_max=160000)]).jobs[0].salary
+        assert salary is not None
+        assert (salary.currency, salary.currency_source) == ("USD", CurrencySource.ASSUMED)
+
+    def test_a_floor_with_no_ceiling_leaves_the_ceiling_unknown(self) -> None:
+        salary = _fetch([_job(salary_min=120000, salary_max=0)]).jobs[0].salary
+        assert salary is not None
+        assert (salary.minimum, salary.maximum) == (120000, None)
+
+    def test_a_ceiling_with_no_floor_leaves_the_floor_unknown(self) -> None:
+        salary = _fetch([_job(salary_min=0, salary_max=160000)]).jobs[0].salary
+        assert salary is not None
+        assert (salary.minimum, salary.maximum) == (None, 160000)
+
+    def test_an_inverted_range_is_kept_as_text_rather_than_ending_the_fetch(self) -> None:
+        result = _fetch([_job(salary_min=200000, salary_max=100000)])
+        salary = result.jobs[0].salary
+        assert not result.failed
+        assert salary is not None
+        assert (salary.minimum, salary.maximum) == (None, None)
+        assert "inverted range" in salary.note and "withheld" in salary.note
 
 
 class TestBudgetAndFreshness:

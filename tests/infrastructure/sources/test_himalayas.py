@@ -15,7 +15,12 @@ import httpx
 import pytest
 import respx
 
-from job_seeker.domain.models import SearchQuery, SourceResult
+from job_seeker.domain.models import (
+    CurrencySource,
+    SalaryPeriod,
+    SearchQuery,
+    SourceResult,
+)
 from job_seeker.infrastructure.sources.himalayas import HimalayasSource
 
 API = "https://himalayas.app/jobs/api"
@@ -68,7 +73,7 @@ def _fetch(
     with respx.mock:
         respx.get(API).mock(return_value=httpx.Response(200, json=_page(records, total=total)))
         return _source().fetch(
-            SearchQuery(max_results_per_source=max_results, max_age_days=max_age_days)
+            SearchQuery(scan_depth_per_source=max_results, max_age_days=max_age_days)
         )
 
 
@@ -90,6 +95,102 @@ class TestNormalization:
         """Defends against the day the API is fixed: a genuine name wins over the slug."""
         job = _fetch([_record(companyName="Acme Labs, Inc.")]).jobs[0]
         assert job.company == "Acme Labs, Inc."
+
+    def test_the_board_figures_survive_as_numbers(self) -> None:
+        """The adapter's job is to carry what the board published, not to render it."""
+        salary = _fetch([_record(minSalary=120000, maxSalary=160000)]).jobs[0].salary
+        assert salary is not None
+        assert (salary.minimum, salary.maximum, salary.currency) == (120000, 160000, "USD")
+
+    def test_a_floor_with_no_ceiling_leaves_the_ceiling_unknown(self) -> None:
+        """Not the same fact as a fixed rate, and it must not become a range against a phantom
+        zero."""
+        salary = _fetch([_record(minSalary=120000, maxSalary=None)]).jobs[0].salary
+        assert salary is not None
+        assert (salary.minimum, salary.maximum) == (120000, None)
+
+    def test_a_ceiling_with_no_floor_leaves_the_floor_unknown(self) -> None:
+        salary = _fetch([_record(minSalary=None, maxSalary=160000)]).jobs[0].salary
+        assert salary is not None
+        assert (salary.minimum, salary.maximum) == (None, 160000)
+
+    def test_a_zero_figure_is_treated_as_unspecified_not_as_a_salary_of_zero(self) -> None:
+        salary = _fetch([_record(minSalary=0, maxSalary=0)]).jobs[0].salary
+        assert salary is None
+
+    def test_a_posting_with_no_pay_fields_carries_no_salary_at_all(self) -> None:
+        """None, not an empty range: the board said nothing, which is not the same as saying
+        there is no pay."""
+        assert _fetch([_record(minSalary=None, maxSalary=None)]).jobs[0].salary is None
+
+    def test_an_obviously_hourly_figure_is_declared_hourly(self) -> None:
+        """From live data: 47 of 311 pay-bearing records sit below 200, the largest being 150, and
+        their titles are hourly work. No annual salary is 150 in any currency."""
+        salary = _fetch([_record(minSalary=85, maxSalary=85)]).jobs[0].salary
+        assert salary is not None
+        assert salary.period is SalaryPeriod.HOUR
+        assert salary.annual_minimum == 176_800  # 85 x 2080, comparable at last
+
+    def test_an_obviously_annual_figure_is_declared_annual(self) -> None:
+        """243 of 311 records sit at or above 50,000, the smallest being exactly 50,000."""
+        salary = _fetch([_record(minSalary=146_000, maxSalary=225_000)]).jobs[0].salary
+        assert salary is not None
+        assert salary.period is SalaryPeriod.YEAR
+        assert salary.annual_minimum == 146_000
+
+    def test_the_ambiguous_middle_is_declared_unknown_rather_than_guessed(self) -> None:
+        """The band this adapter refuses to guess in. Live records there are genuinely mixed:
+        3,255-4,160 USD is a Colombian monthly salary, 47,000-67,200 USD is annual, and magnitude
+        cannot separate them. An unknown period yields no annualized figure, which is the honest
+        answer rather than a confident wrong one.
+        """
+        salary = _fetch([_record(minSalary=3255, maxSalary=4160)]).jobs[0].salary
+        assert salary is not None
+        assert salary.period is None
+        assert salary.annual_minimum is None
+        assert salary.minimum == 3255  # the board's own figure is still reported
+
+    def test_the_currency_is_marked_published_because_this_board_states_it(self) -> None:
+        salary = _fetch([_record(currency="CAD")]).jobs[0].salary
+        assert salary is not None
+        assert (salary.currency, salary.currency_source) == ("CAD", CurrencySource.PUBLISHED)
+
+    def test_a_posting_with_no_currency_carries_neither_currency_nor_a_source(self) -> None:
+        """Absent, not empty. A currency with no stated origin cannot be told apart from one the
+        engine invented, which is exactly what the source field exists to prevent."""
+        salary = _fetch([_record(currency="")]).jobs[0].salary
+        assert salary is not None
+        assert salary.currency is None
+        assert salary.currency_source is None
+
+    def test_the_annual_band_is_not_applied_to_an_uncalibrated_currency(self) -> None:
+        """The upper band is a magnitude, so it only means anything where it was measured. A
+        monthly 3,000,000 COP clears 50,000 and would read as annual, so an uncalibrated currency
+        falls through to unknown rather than being confidently mislabelled.
+        """
+        salary = _fetch([_record(minSalary=3_000_000, maxSalary=4_000_000, currency="COP")])
+        pay = salary.jobs[0].salary
+        assert pay is not None
+        assert pay.period is None
+        assert pay.annual_minimum is None
+
+    def test_the_hourly_band_applies_in_any_currency(self) -> None:
+        """Safe universally: no annual salary anywhere is under 200 units."""
+        pay = _fetch([_record(minSalary=150, maxSalary=150, currency="COP")]).jobs[0].salary
+        assert pay is not None
+        assert pay.period is SalaryPeriod.HOUR
+
+    def test_an_inverted_range_is_kept_as_text_rather_than_ending_the_page(self) -> None:
+        """A board can contradict itself. SalaryRange refuses an inverted range, so letting it
+        construct would raise inside normalization and take the whole page with it. Swapping the
+        bounds instead would report a fact the board never published.
+        """
+        result = _fetch([_record(minSalary=200000, maxSalary=100000)])
+        salary = result.jobs[0].salary
+        assert not result.failed
+        assert salary is not None
+        assert (salary.minimum, salary.maximum) == (None, None)
+        assert "inverted range" in salary.note and "withheld" in salary.note
 
     def test_structured_restrictions_become_hints(self) -> None:
         job = _fetch([_record()]).jobs[0]
@@ -133,7 +234,7 @@ class TestPaginationAndBudget:
                     httpx.Response(200, json={"jobs": full, "totalCount": 40, "offset": 20}),
                 ]
             )
-            result = _source().fetch(SearchQuery(max_results_per_source=30, max_age_days=None))
+            result = _source().fetch(SearchQuery(scan_depth_per_source=30, max_age_days=None))
         assert len(result.jobs) == 30
         # Prove the state machine actually paged: the second request asked for offset 20. A test
         # that only counts jobs would pass even if offset never moved.
@@ -147,7 +248,7 @@ class TestPaginationAndBudget:
         with respx.mock:
             respx.get(API).mock(return_value=httpx.Response(200, json=_page(full, total=10**9)))
             source = HimalayasSource(page_delay=0.0, sleep=lambda _: None, scan_cap=60)
-            result = source.fetch(SearchQuery(max_results_per_source=1000, max_age_days=None))
+            result = source.fetch(SearchQuery(scan_depth_per_source=1000, max_age_days=None))
         assert result.scanned <= 80  # stopped near the cap, did not walk a billion records
         assert result.truncated is True
 
@@ -159,7 +260,7 @@ class TestPaginationAndBudget:
             route = respx.get(API).mock(
                 return_value=httpx.Response(200, json=_page(stale_page, total=10**6))
             )
-            result = _source().fetch(SearchQuery(max_results_per_source=50, max_age_days=30))
+            result = _source().fetch(SearchQuery(scan_depth_per_source=50, max_age_days=30))
         assert result.jobs == []
         assert result.truncated is False
         assert route.call_count == 1  # did not page past the first all-stale page

@@ -10,12 +10,15 @@ from pydantic import ValidationError
 
 from job_seeker.domain.models import (
     ELIGIBLE_STATUSES,
+    CurrencySource,
     Eligibility,
     EligibilityHints,
     EligibilityStatus,
     FitScore,
     Job,
     Relevance,
+    SalaryPeriod,
+    SalaryRange,
     ScoredJob,
 )
 
@@ -168,6 +171,161 @@ class TestJobCarriesHints:
         job = make_job()
         assert not hasattr(job, "location_restrictions")
         assert not hasattr(job, "timezone_restrictions")
+
+
+class TestSalaryRange:
+    """Two boards publish compensation as numbers; flattening it to a string at the adapter
+    boundary threw that away, unrecoverably, before anything could reason about it.
+
+    Same three-state discipline as EligibilityHints: `Job.salary is None` means the board said
+    nothing, and a SalaryRange means it said something, even if only a floor or only free text.
+    """
+
+    def test_a_board_that_published_nothing_leaves_salary_absent(
+        self, make_job: Callable[..., Job]
+    ) -> None:
+        assert make_job().salary is None
+
+    def test_it_carries_the_bounds_and_currency_separately(self) -> None:
+        salary = SalaryRange(
+            minimum=120_000,
+            maximum=160_000,
+            currency="USD",
+            currency_source=CurrencySource.PUBLISHED,
+        )
+        assert (salary.minimum, salary.maximum, salary.currency) == (120_000, 160_000, "USD")
+
+    def test_a_floor_with_no_ceiling_is_expressible(self) -> None:
+        """ "From 120k" is a real posting, and is not the same fact as "120k to 120k"."""
+        salary = SalaryRange(
+            minimum=120_000, currency="USD", currency_source=CurrencySource.PUBLISHED
+        )
+        assert salary.minimum == 120_000
+        assert salary.maximum is None
+
+    def test_free_text_survives_when_a_board_publishes_no_numbers(self) -> None:
+        """Some boards publish only prose. Keeping it means a reader still sees what was offered
+        instead of a blank, without the pipeline pretending it parsed a number."""
+        salary = SalaryRange(note="Competitive, DOE")
+        assert salary.note == "Competitive, DOE"
+        assert salary.minimum is None
+
+    def test_it_is_frozen_because_it_is_something_a_board_reported(self) -> None:
+        salary = SalaryRange(minimum=100, currency="USD", currency_source=CurrencySource.PUBLISHED)
+        with pytest.raises(ValidationError):
+            salary.minimum = 200
+
+    def test_a_negative_bound_is_rejected_at_the_boundary(self) -> None:
+        """A board sending a negative salary is bad data, and it should fail where it arrives
+        rather than surface as a nonsense figure in a report."""
+        with pytest.raises(ValidationError):
+            SalaryRange(minimum=-1)
+
+    def test_a_maximum_below_the_minimum_is_rejected(self) -> None:
+        """An inverted range is not a range. Catching it here keeps every consumer from having to
+        decide which of the two numbers to believe."""
+        with pytest.raises(ValidationError):
+            SalaryRange(minimum=200_000, maximum=100_000)
+
+    def test_an_equal_minimum_and_maximum_is_a_fixed_rate_not_an_error(self) -> None:
+        assert SalaryRange(minimum=150_000, maximum=150_000).maximum == 150_000
+
+    def test_a_range_that_carries_no_claim_at_all_is_rejected(self) -> None:
+        """Otherwise there are two ways to spell "no pay information", `Job.salary is None` and an
+        empty SalaryRange, and the docstring's claim that absence lives on `Job.salary` is a
+        convention rather than a guarantee. Dedup already reads presence of this object as a
+        richness signal, so an empty one would count as rich.
+        """
+        with pytest.raises(ValidationError):
+            SalaryRange()
+        with pytest.raises(ValidationError):
+            SalaryRange(
+                currency="USD", currency_source=CurrencySource.PUBLISHED
+            )  # a currency alone says nothing about pay
+
+    def test_a_currency_without_a_stated_origin_is_rejected(self) -> None:
+        """Both halves or neither. A currency whose origin is unrecorded cannot be told apart from
+        one the engine invented, which is the entire reason the source field exists."""
+        with pytest.raises(ValidationError):
+            SalaryRange(minimum=100, currency="USD")
+        with pytest.raises(ValidationError):
+            SalaryRange(minimum=100, currency_source=CurrencySource.ASSUMED)
+
+    def test_board_prose_alone_is_a_claim(self) -> None:
+        assert SalaryRange(note="Competitive, DOE").note == "Competitive, DOE"
+
+
+class TestAnnualizing:
+    """Figures only compare once they are on one basis.
+
+    Live Himalayas data returns 85 and 146,000 in the same currency on the same page, so ranking
+    on the bare number puts an $85/hour role below a $60,000 one. The board's own figures stay
+    exactly as published; the comparable ones are derived alongside them and labelled derived.
+    """
+
+    @pytest.mark.parametrize(
+        "period,expected",
+        [
+            (SalaryPeriod.YEAR, 120_000),
+            (SalaryPeriod.MONTH, 1_440_000),
+            (SalaryPeriod.WEEK, 6_240_000),
+            (SalaryPeriod.DAY, 31_200_000),
+            (SalaryPeriod.HOUR, 249_600_000),
+        ],
+    )
+    def test_each_period_converts_on_a_full_time_basis(
+        self, period: SalaryPeriod, expected: float
+    ) -> None:
+        assert SalaryRange(minimum=120_000, period=period).annual_minimum == expected
+
+    def test_the_hourly_case_this_exists_for(self) -> None:
+        """The live posting that exposed the problem: $85/hour, which is not $85."""
+        hourly = SalaryRange(
+            minimum=85,
+            maximum=85,
+            currency="USD",
+            currency_source=CurrencySource.PUBLISHED,
+            period=SalaryPeriod.HOUR,
+        )
+        assert hourly.annual_minimum == 176_800  # 85 x 2080
+        assert hourly.minimum == 85  # what the board actually published is untouched
+
+    def test_an_unknown_period_annualizes_to_nothing_rather_than_guessing(self) -> None:
+        """The whole point of keeping the period nullable. A magnitude with no basis cannot be
+        compared, and inventing one is how an hourly rate gets ranked as a salary."""
+        unknown = SalaryRange(
+            minimum=3255, maximum=4160, currency="USD", currency_source=CurrencySource.PUBLISHED
+        )
+        assert unknown.period is None
+        assert unknown.annual_minimum is None
+        assert unknown.annual_maximum is None
+
+    def test_an_absent_bound_annualizes_to_nothing(self) -> None:
+        floor = SalaryRange(minimum=120_000, period=SalaryPeriod.YEAR)
+        assert floor.annual_minimum == 120_000
+        assert floor.annual_maximum is None
+
+    def test_the_derived_figures_cross_the_wire(self) -> None:
+        """An MCP agent cannot apply the full-time assumption itself, so the conversion has to
+        travel with the payload rather than staying a Python-side property."""
+        payload = json.loads(
+            SalaryRange(
+                minimum=85,
+                currency="USD",
+                currency_source=CurrencySource.PUBLISHED,
+                period=SalaryPeriod.HOUR,
+            ).model_dump_json()
+        )
+        assert payload["annual_minimum"] == 176_800
+        assert payload["period"] == "hour"
+
+    def test_two_postings_on_different_periods_become_comparable(self) -> None:
+        """The end the whole feature serves."""
+        hourly = SalaryRange(minimum=85, period=SalaryPeriod.HOUR)
+        annual = SalaryRange(minimum=60_000, period=SalaryPeriod.YEAR)
+        assert (hourly.minimum, annual.minimum) == (85, 60_000)  # the raw figures mislead
+        ranked = sorted([hourly, annual], key=lambda s: s.annual_minimum or 0, reverse=True)
+        assert ranked[0] is hourly  # annualized, the $85/hour role is the better paid one
 
 
 class TestJobSearchText:

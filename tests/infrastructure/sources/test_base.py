@@ -6,12 +6,14 @@ sleep so the tests do not actually wait.
 
 from __future__ import annotations
 
-from datetime import UTC, datetime
+from datetime import UTC, datetime, timedelta
+from email.utils import format_datetime
 
 import httpx
 import pytest
 import respx
 
+from job_seeker.domain.models import CurrencySource, SalaryPeriod
 from job_seeker.infrastructure.sources import base
 
 
@@ -52,6 +54,202 @@ class TestToUtcDatetime:
         """bool subclasses int, so `pubDate: true` would otherwise become a 1970 date. It is
         absent data, not a timestamp, consistent with how the salary parser rejects bool."""
         assert base.to_utc_datetime(True) is None
+
+
+class TestSalaryFromBounds:
+    """Turning a board's two numbers into a SalaryRange, without ever raising.
+
+    This lives here rather than in each adapter because it is not board knowledge: every board can
+    send a negative, a NaN, or an upper bound below its lower one, and every adapter must survive
+    it identically. Two adapters implementing it separately had already produced two different
+    number formats.
+
+    The load-bearing property is that it CANNOT raise. `SalaryRange` rejects a negative and an
+    inverted range, `fetch` is contracted never to raise, and one bad row must not cost a board.
+    """
+
+    def test_ordinary_bounds_become_a_range(self) -> None:
+        salary = base.salary_from_bounds(
+            120_000,
+            160_000,
+            currency="USD",
+            currency_source=CurrencySource.PUBLISHED,
+            period=SalaryPeriod.YEAR,
+        )
+        assert salary is not None
+        assert (salary.minimum, salary.maximum, salary.currency) == (120_000, 160_000, "USD")
+
+    def test_no_figures_at_all_is_no_salary(self) -> None:
+        assert (
+            base.salary_from_bounds(
+                None,
+                None,
+                currency="USD",
+                currency_source=CurrencySource.PUBLISHED,
+                period=SalaryPeriod.YEAR,
+            )
+            is None
+        )
+
+    def test_zero_means_unspecified_on_every_board(self) -> None:
+        """Both boards document 0 as "unspecified". Expressing that once stops the two adapters
+        spelling it differently, which they did: one used truthiness, one a `> 0` predicate."""
+        assert (
+            base.salary_from_bounds(
+                0,
+                0,
+                currency="USD",
+                currency_source=CurrencySource.PUBLISHED,
+                period=SalaryPeriod.YEAR,
+            )
+            is None
+        )
+        floor = base.salary_from_bounds(
+            120_000,
+            0,
+            currency="USD",
+            currency_source=CurrencySource.PUBLISHED,
+            period=SalaryPeriod.YEAR,
+        )
+        assert floor is not None and (floor.minimum, floor.maximum) == (120_000, None)
+
+    @pytest.mark.parametrize(
+        "value",
+        [-1, -0.5, float("nan"), float("inf"), float("-inf"), "120k", True, None, [1]],
+    )
+    def test_an_unusable_figure_is_dropped_rather_than_raised_on(self, value: object) -> None:
+        """The regression this exists to prevent: a negative or non-finite figure reached
+        `SalaryRange`, whose `ge=0` raised ValidationError out of `_normalize`, out of `fetch`, and
+        killed the entire board over one row. `inf` was worse, passing `ge=0` as a salary of
+        infinity.
+        """
+        assert (
+            base.salary_from_bounds(
+                value,
+                None,
+                currency="USD",
+                currency_source=CurrencySource.PUBLISHED,
+                period=SalaryPeriod.YEAR,
+            )
+            is None
+        )
+        assert (
+            base.salary_from_bounds(
+                None,
+                value,
+                currency="USD",
+                currency_source=CurrencySource.PUBLISHED,
+                period=SalaryPeriod.YEAR,
+            )
+            is None
+        )
+
+    def test_a_bool_is_not_a_salary(self) -> None:
+        """bool subclasses int, so True would otherwise become a salary of 1."""
+        assert (
+            base.salary_from_bounds(
+                True,
+                None,
+                currency="USD",
+                currency_source=CurrencySource.PUBLISHED,
+                period=SalaryPeriod.YEAR,
+            )
+            is None
+        )
+
+    def test_an_inverted_range_is_kept_as_text_not_swapped_and_not_raised_on(self) -> None:
+        salary = base.salary_from_bounds(
+            200_000,
+            100_000,
+            currency="MXN",
+            currency_source=CurrencySource.PUBLISHED,
+            period=SalaryPeriod.YEAR,
+        )
+        assert salary is not None
+        assert (salary.minimum, salary.maximum) == (None, None)
+        assert salary.currency == "MXN"
+        assert "inverted range" in salary.note
+        assert "withheld" in salary.note
+        assert "200,000 to 100,000" in salary.note  # stated, not restated as a range
+
+    def test_a_seven_figure_inverted_range_stays_readable(self) -> None:
+        """The `,g` format spec used before this was extracted drops to scientific notation past
+        six significant digits, so an inverted MXN range rendered as "1.5e+06 - 1e+06"."""
+        salary = base.salary_from_bounds(
+            1_500_000,
+            1_000_000,
+            currency="MXN",
+            currency_source=CurrencySource.PUBLISHED,
+            period=SalaryPeriod.YEAR,
+        )
+        assert salary is not None
+        assert "1,500,000 to 1,000,000" in salary.note  # not "1.5e+06"
+
+    def test_equal_bounds_are_a_fixed_rate_not_an_inversion(self) -> None:
+        salary = base.salary_from_bounds(
+            150_000,
+            150_000,
+            currency="USD",
+            currency_source=CurrencySource.PUBLISHED,
+            period=SalaryPeriod.YEAR,
+        )
+        assert salary is not None
+        assert (salary.minimum, salary.maximum) == (150_000, 150_000)
+
+
+class TestRetryAfterIsAlwaysSleepable:
+    """Whatever a board sends, the value handed to time.sleep must be one it accepts.
+
+    The header is board-controlled and `fetch` runs in a ThreadPoolExecutor worker, so a value that
+    raises (`inf` reaching sleep is an OverflowError) or blocks for years is a denial of service on
+    our own run, not the board's problem. The individual cases are covered above; this asserts the
+    invariant holds across every shape at once, so a future change to the parsing cannot satisfy
+    one example while breaking the guarantee.
+
+    Non-ASCII header values are absent on purpose: httpx refuses to construct them, so they cannot
+    reach this code.
+    """
+
+    @pytest.mark.parametrize(
+        "header",
+        [
+            "",
+            " ",
+            "0",
+            "-0",
+            "-99999",
+            "999999999999",
+            "inf",
+            "-inf",
+            "nan",
+            "NaN",
+            "1e400",
+            "0x10",
+            "1_000",
+            "1,000",
+            "+120",
+            "  120  ",
+            "soon",
+            "12; 34",
+            "2015-10-21T07:28:00Z",
+            "Wed, 21 Oct 2015 07:28:00 GMT",
+            "Fri, 31 Dec 9999 23:59:59 GMT",
+            "Mon, 01 Jan 1900 00:00:00 GMT",
+            "Fri, 99 Xxx 2100 99:99:99 GMT",
+            "A" * 10_000,
+        ],
+    )
+    def test_a_bounded_non_negative_float_comes_back_and_nothing_raises(self, header: str) -> None:
+        response = httpx.Response(
+            429,
+            headers={"retry-after": header},
+            request=httpx.Request("GET", "https://example.com/api"),
+        )
+        seconds = base._retry_after_seconds(response)
+        assert isinstance(seconds, float)
+        assert seconds == seconds  # not NaN, which sleep would reject
+        assert not seconds < 0  # -0.0 is acceptable to sleep; a true negative is not
+        assert seconds <= base._MAX_BACKOFF
 
 
 class TestBuildClient:
@@ -127,6 +325,58 @@ class TestGetJson:
             with base.build_client() as client:
                 base.get_json(client, "https://example.com/api", sleep=slept.append, max_retries=3)
         assert slept == [base._RATE_LIMIT_BACKOFF]
+
+    def _sleeps_for(self, header: str | None) -> list[float]:
+        """Drive one 429-then-200 exchange and report what it slept."""
+        slept: list[float] = []
+        headers = {} if header is None else {"retry-after": header}
+        with respx.mock:
+            respx.get("https://example.com/api").mock(
+                side_effect=[
+                    httpx.Response(429, headers=headers),
+                    httpx.Response(200, json={"ok": True}),
+                ]
+            )
+            with base.build_client() as client:
+                base.get_json(client, "https://example.com/api", sleep=slept.append, max_retries=3)
+        return slept
+
+    def test_a_429_with_no_retry_after_at_all_uses_the_default_backoff(self) -> None:
+        """The ordinary 429. Most boards send no Retry-After, and every other test here sets one,
+        so the plain case had never actually run."""
+        assert self._sleeps_for(None) == [base._RATE_LIMIT_BACKOFF]
+
+    def test_a_negative_retry_after_falls_back_rather_than_sleeping_backwards(self) -> None:
+        assert self._sleeps_for("-5") == [base._RATE_LIMIT_BACKOFF]
+
+    def test_an_unparseable_retry_after_falls_back_to_the_default(self) -> None:
+        assert self._sleeps_for("soon") == [base._RATE_LIMIT_BACKOFF]
+
+    def test_an_http_date_retry_after_is_honored_not_ignored(self) -> None:
+        """RFC 9110 lets Retry-After be an HTTP-date as well as a number of seconds, and boards
+        send both. Reading only the numeric form means a board asking for a real pause gets
+        retried on the 2-second default instead, which is the impolite direction to be wrong in."""
+        soon = format_datetime(datetime.now(UTC) + timedelta(seconds=30), usegmt=True)
+        slept = self._sleeps_for(soon)
+        assert len(slept) == 1
+        assert 20 < slept[0] <= 40  # ~30s, tolerant of clock movement during the test
+
+    def test_a_far_future_http_date_still_clamps_to_the_ceiling(self) -> None:
+        """The clamp is the whole reason the header is not trusted: it is board-controlled and
+        fetch runs in a worker thread."""
+        assert self._sleeps_for("Fri, 31 Dec 2100 23:59:59 GMT") == [base._MAX_BACKOFF]
+
+    def test_an_http_date_already_in_the_past_falls_back_instead_of_going_negative(self) -> None:
+        assert self._sleeps_for("Wed, 21 Oct 2015 07:28:00 GMT") == [base._RATE_LIMIT_BACKOFF]
+
+    def test_an_http_date_with_no_timezone_is_read_as_gmt_not_crashed_on(self) -> None:
+        """An HTTP-date is GMT by definition, but a sloppy board can omit the zone and the parser
+        accepts it, yielding a naive datetime. Subtracting that from an aware `now` raises
+        TypeError, straight out of a worker thread."""
+        naive = format_datetime(datetime.now(UTC) + timedelta(seconds=30))[:-6]  # drop " +0000"
+        slept = self._sleeps_for(naive)
+        assert len(slept) == 1
+        assert 20 < slept[0] <= 40
 
     def test_backs_off_and_retries_on_429_then_succeeds(self) -> None:
         slept: list[float] = []

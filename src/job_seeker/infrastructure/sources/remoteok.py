@@ -19,10 +19,27 @@ from typing import Any
 
 import httpx
 
-from job_seeker.domain.models import Job, SearchQuery, SourceResult
+from job_seeker.domain.models import (
+    CurrencySource,
+    Job,
+    SalaryPeriod,
+    SalaryRange,
+    SearchQuery,
+    SourceResult,
+)
 from job_seeker.infrastructure.sources import base
 
 _API_URL = "https://remoteok.com/api"
+
+# What RemoteOK's `salary_min`/`salary_max` are quoted per. The board publishes no period field,
+# so this is this adapter's declaration about its own board, the same kind of claim as the USD
+# below.
+#
+# Evidence, and it is thin: a live sample of the full feed had pay on 1 of 100 records
+# (50,000-210,000), consistent with annual and with the board's own salary filters, which are
+# annual USD bands. No figure resembling an hourly or monthly rate has been observed. Revisit if a
+# posting ever appears with a figure under about 1,000.
+_SALARY_PERIOD = SalaryPeriod.YEAR
 
 
 class RemoteOkSource:
@@ -54,7 +71,7 @@ class RemoteOkSource:
             if job is None or base.is_stale(job.posted_at, cutoff):
                 continue
             jobs.append(job)
-            if len(jobs) >= query.max_results_per_source:
+            if len(jobs) >= query.scan_depth_per_source:
                 # Truncated only if a real posting still remains past the break. Deriving it from
                 # position, not from a recount, is what keeps scanned and truncated in agreement.
                 truncated = any(_is_job_record(r) for r in records[index + 1 :])
@@ -95,17 +112,17 @@ def _normalize(record: Any) -> Job | None:
     )
 
 
-def _salary(record: dict[str, Any]) -> str:
-    # USD is assumed, not read: the /api endpoint exposes salary_min/max but no currency field.
-    minimum = _positive(record.get("salary_min"))
-    maximum = _positive(record.get("salary_max"))
-    if not minimum and not maximum:
-        return ""  # RemoteOK uses 0 for "unspecified"
-    if minimum and maximum and minimum != maximum:
-        return f"USD {minimum:,} - {maximum:,}"
-    value = minimum or maximum
-    return f"USD {value:,}"
+def _salary(record: dict[str, Any]) -> SalaryRange | None:
+    """The figures the board published, in USD.
 
-
-def _positive(value: Any) -> int | None:
-    return value if isinstance(value, int) and not isinstance(value, bool) and value > 0 else None
+    USD is asserted, not read: the /api endpoint exposes salary_min/max and no currency field. The
+    assertion is this adapter's knowledge of its own board, which is why it is the one part not
+    shared with `base.salary_from_bounds`.
+    """
+    return base.salary_from_bounds(
+        record.get("salary_min"),
+        record.get("salary_max"),
+        currency="USD",
+        currency_source=CurrencySource.ASSUMED,
+        period=_SALARY_PERIOD,
+    )

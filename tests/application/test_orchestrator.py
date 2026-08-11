@@ -10,9 +10,11 @@ from __future__ import annotations
 from job_seeker.application.orchestrator import JobSeeker
 from job_seeker.domain.models import (
     EligibilityHints,
+    EligibilityStatus,
     Job,
     SearchQuery,
     SearchResult,
+    SortOrder,
     SourceResult,
 )
 from job_seeker.domain.profile import EligibilityRules, LocationProfile, Profile
@@ -73,7 +75,7 @@ class TestFanOutAndCollect:
     def test_no_sources_yields_an_empty_incomplete_result(self) -> None:
         result = _run([])
         assert result.jobs == []
-        assert result.is_complete is False  # zero sources ran
+        assert (result.all_sources_ran and result.fully_scanned) is False  # zero sources ran
 
 
 class TestFailureIsolation:
@@ -89,13 +91,162 @@ class TestFailureIsolation:
         coverage = {c.source: c for c in result.coverage}
         assert coverage["bad"].failed
         assert "careless adapter" in coverage["bad"].error
-        assert result.is_complete is False
+        assert (result.all_sources_ran and result.fully_scanned) is False
 
     def test_a_reported_source_error_is_carried_into_coverage(self) -> None:
         good = FakeSource("good", SourceResult(source="good", jobs=[_job("Dev", source="good")]))
         down = FakeSource("down", SourceResult(source="down", error="HTTP 503"))
         result = _run([good, down])
         assert {c.source: c.error for c in result.coverage}["down"] == "HTTP 503"
+
+
+class TestScanDepthAndMaxResultsAreDifferentThings:
+    """One parameter used to mean both, and it silently meant the worse one.
+
+    `--limit 5` reads as "give me five results". It was a per-board fetch depth applied before
+    ranking, so it shrank the pool the answer was chosen from: the seeker got five of whatever was
+    fetched first, and the best-fitting posting might never have been read at all.
+    """
+
+    @staticmethod
+    def _board(name: str, count: int) -> FakeSource:
+        """A board of engineers whose fit rises with the index, so rank and fetch order differ."""
+        jobs = [
+            _job(
+                f"Engineer {index}",
+                source=name,
+                company=f"Co {name}{index}",
+                description=" ".join(["python"] * (index + 1)),
+            )
+            for index in range(count)
+        ]
+        return FakeSource(name, SourceResult(source=name, jobs=jobs, scanned=count))
+
+    def _search(self, sources: list[FakeSource], **query: object) -> SearchResult:
+        seeker = JobSeeker.default(list(sources), _profile())
+        return seeker.run(SearchQuery(terms=["engineer"], max_age_days=None, **query))  # type: ignore[arg-type]
+
+    def test_max_results_caps_the_output_after_ranking(self) -> None:
+        result = self._search([self._board("a", 10)], max_results=3)
+        assert len(result.jobs) == 3
+        ranks = [scored.fit.raw for scored in result.jobs]
+        assert ranks == sorted(ranks, reverse=True)  # the three best, not the three fetched first
+
+    def test_no_cap_returns_everything_ranked(self) -> None:
+        assert len(self._search([self._board("a", 10)]).jobs) == 10
+
+    def test_coverage_counts_what_matched_not_what_survived_the_cap(self) -> None:
+        """So `sum(kept) > len(jobs)` is how a caller sees the cap bit. Counting post-cap would
+        make a board that contributed ten matches look like it contributed three."""
+        result = self._search([self._board("a", 10)], max_results=3)
+        assert sum(c.kept for c in result.coverage) == 10
+        assert len(result.jobs) == 3
+
+    def test_a_deep_scan_with_a_small_cap_is_now_expressible(self) -> None:
+        """The combination that actually answers "the five best jobs", and the one the old single
+        parameter could not say: it could only fetch fewer, which returns five worse ones."""
+        result = self._search(
+            [self._board("a", 10), self._board("b", 10)], scan_depth_per_source=10, max_results=5
+        )
+        assert len(result.jobs) == 5
+        assert sum(c.kept for c in result.coverage) == 20
+
+
+class TestStatedOnlyAndConfidenceOrder:
+    """Two questions a seeker asks that fit alone cannot answer.
+
+    "What can I definitely hold" is not "what suits me best". A board that never said who may hold
+    a role produces `remote-verify`, which is a lead, and live data returned a 26% lead above a 5%
+    certainty. Which of those belongs first is the seeker's call, not the engine's.
+    """
+
+    @staticmethod
+    def _board() -> FakeSource:
+        jobs = [
+            # A weak match the board explicitly opened to the seeker's own country.
+            _job(
+                "Engineer A",
+                source="s",
+                company="Certain Co",
+                hints=EligibilityHints(location_restrictions=("Testland",)),
+            ),
+            # A strong match nobody cleared: no structured hints, and text that says nothing.
+            _job(
+                "Engineer B",
+                source="s",
+                company="Unverified Co",
+                description="python rag " * 8,
+                hints=EligibilityHints(),
+            ),
+        ]
+        return FakeSource("s", SourceResult(source="s", jobs=jobs, scanned=2))
+
+    def _run(self, **query: object) -> SearchResult:
+        seeker = JobSeeker.default([self._board()], _profile())
+        return seeker.run(SearchQuery(terms=["engineer"], max_age_days=None, **query))  # type: ignore[arg-type]
+
+    def test_by_default_the_better_match_wins_even_if_unverified(self) -> None:
+        result = self._run()
+        assert [j.job.company for j in result.jobs] == ["Unverified Co", "Certain Co"]
+
+    def test_confidence_order_puts_the_stated_verdict_first(self) -> None:
+        result = self._run(sort=SortOrder.CONFIDENCE)
+        assert [j.job.company for j in result.jobs] == ["Certain Co", "Unverified Co"]
+
+    def test_confidence_order_still_uses_fit_inside_a_tier(self) -> None:
+        """It groups, it does not reshuffle: two equally stated postings keep fit order.
+
+        This is why the tiers are stated-vs-unstated and not one per status. Ranking home-based
+        above regional put a 3% Node.js role above a 26% Senior AI Engineer on live data: the
+        difference between those statuses is geography, not confidence.
+        """
+        jobs = [
+            _job(
+                "Engineer weak",
+                source="s",
+                company="Weak",
+                hints=EligibilityHints(location_restrictions=("Testland",)),
+            ),
+            _job(
+                "Engineer strong",
+                source="s",
+                company="Strong",
+                description="python rag " * 8,
+                hints=EligibilityHints(location_restrictions=("Testland",)),
+            ),
+        ]
+        seeker = JobSeeker.default(
+            [FakeSource("s", SourceResult(source="s", jobs=jobs))], _profile()
+        )
+        result = seeker.run(
+            SearchQuery(terms=["engineer"], max_age_days=None, sort=SortOrder.CONFIDENCE)
+        )
+        assert [j.job.company for j in result.jobs] == ["Strong", "Weak"]
+
+    def test_stated_only_drops_what_no_board_cleared(self) -> None:
+        result = self._run(stated_only=True)
+        assert [j.job.company for j in result.jobs] == ["Certain Co"]
+        assert all(
+            j.eligibility.status is not EligibilityStatus.REMOTE_UNVERIFIED for j in result.jobs
+        )
+
+    def test_stated_only_is_off_by_default(self) -> None:
+        assert len(self._run().jobs) == 2
+
+    def test_stated_only_narrows_and_never_widens(self) -> None:
+        """The profile's `include_unverified: false` is a standing preference. A per-search flag
+        must not be able to undo it, or a seeker who opted out gets leads back without asking."""
+        opted_out = _profile()
+        opted_out = opted_out.model_copy(
+            update={
+                "eligibility": opted_out.eligibility.model_copy(
+                    update={"include_unverified": False}
+                )
+            }
+        )
+        seeker = JobSeeker.default([self._board()], opted_out)
+        result = seeker.run(SearchQuery(terms=["engineer"], max_age_days=None, stated_only=False))
+        assert [j.job.company for j in result.jobs] == ["Certain Co"]
 
 
 class TestCombination:

@@ -7,11 +7,13 @@ from datetime import UTC, datetime
 import pytest
 
 from job_seeker.domain.models import (
+    CurrencySource,
     Eligibility,
     EligibilityStatus,
     FitScore,
     Job,
     Relevance,
+    SalaryRange,
     ScoredJob,
     SearchQuery,
     SearchResult,
@@ -28,7 +30,12 @@ def result() -> SearchResult:
                 company="Acme",
                 url="https://himalayas.app/jobs/acme-ai",
                 source="himalayas",
-                salary="USD 150,000 - 180,000",
+                salary=SalaryRange(
+                    minimum=150_000,
+                    maximum=180_000,
+                    currency="USD",
+                    currency_source=CurrencySource.PUBLISHED,
+                ),
                 posted_at=datetime(2026, 7, 10, tzinfo=UTC),
             ),
             fit=FitScore(value=0.83, raw=6, matched={r"\bpython\b": 3, r"\brag\b": 2}),

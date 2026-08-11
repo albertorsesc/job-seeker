@@ -31,6 +31,22 @@ class TestEveryBuiltinHonorsTheContract:
     def test_name_matches_the_registration_key(self, name: str, factory: object) -> None:
         assert factory().name == name  # type: ignore[operator]
 
+    def test_the_name_is_a_class_level_constant(self, name: str, factory: object) -> None:
+        """Stricter than the port, and deliberately so.
+
+        `JobSource.name` is a read-only property, which a plain attribute and a `@property` both
+        satisfy; that breadth exists so a source whose name is instance state still conforms. An
+        adapter that ships here is held to the narrower rule, because each adapter's `_normalize`
+        is a module function that builds `Job.source` from `TheSource.name`, with no instance in
+        hand. A property evaluates to the descriptor object there, and pydantic
+        rejects it as a non-string, so the failure lands in normalization rather than here.
+
+        Read through `type(instance)` rather than off the factory: a factory may be a lambda
+        rather than the class itself, and the rule is about the class.
+        """
+        instance = factory()  # type: ignore[operator]
+        assert type(instance).name == name
+
     def test_is_available_returns_a_bool_without_io_or_raising(
         self, name: str, factory: object
     ) -> None:
