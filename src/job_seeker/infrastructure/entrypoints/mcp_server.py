@@ -19,7 +19,7 @@ from typing import TYPE_CHECKING, Any
 from pydantic import ValidationError
 
 from job_seeker import __version__
-from job_seeker.domain.models import SearchQuery, SearchResult, SortOrder
+from job_seeker.domain.models import DEFAULT_SCAN_DEPTH, SearchQuery, SearchResult, SortOrder
 from job_seeker.infrastructure.config.profile_loader import (
     MarkdownProfileProvider,
     ProfileError,
@@ -165,7 +165,7 @@ def build_server() -> FastMCP:
     @server.tool()
     def find_jobs(
         terms: list[str] | None = None,
-        scan_depth: int = 50,
+        scan_depth: int = DEFAULT_SCAN_DEPTH,
         max_results: int | None = None,
         max_age_days: int = 30,
         stated_only: bool = False,

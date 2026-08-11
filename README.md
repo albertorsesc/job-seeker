@@ -82,13 +82,13 @@ backstop, but the rule is to keep the file outside the tree.
 ```bash
 job-seeker sources                    # which boards exist, and whether each can run right now
 job-seeker find --terms "AI Engineer" --format json | jq '.jobs[0]'
-job-seeker find --scan-depth 300 --max-results 10 --format html --out report.html
+job-seeker find --max-results 10 --format html --out report.html
 ```
 
 | flag | what it does |
 |---|---|
 | `--terms` | comma-separated search terms. Defaults to your profile's `search_terms` |
-| `--scan-depth` | how many postings to **read** per board (default 50). Widens the pool an answer is chosen from |
+| `--scan-depth` | how many postings to **read** per board (default 1000, which is also the most it will read). Lowering it makes a search faster and its answer worse |
 | `--max-results` | how many ranked results to **return**. Applied after ranking, so it keeps the best |
 | `--max-age-days` | ignore postings older than this (default 30) |
 | `--stated-only` | only postings a board affirmatively cleared, dropping `remote-verify` |
@@ -100,6 +100,13 @@ job-seeker find --scan-depth 300 --max-results 10 --format html --out report.htm
 `--scan-depth` and `--max-results` are deliberately separate. Reading more postings costs time and
 politeness; returning fewer costs nothing. Asking for a short list by scanning less would hand you
 the first few postings found rather than the best ones.
+
+The depth ships at its maximum because reading shallowly measurably costs the answer. Boards order
+their feeds by recency, not by how well a posting suits you, so a shallow scan reads the newest
+postings rather than the best ones. On one profile, a depth of 50 read 180 postings in about a
+second and the largest board contributed nothing at all; 1000 read 1,220 in about thirteen seconds,
+moved the best eligible match from 34% to 52% fit, and put three roles from that board in the top
+five. Thirteen seconds is the cheap resource; the pool is the scarce one.
 
 ### "US job, but open to remote"
 

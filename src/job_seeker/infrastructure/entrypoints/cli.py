@@ -15,7 +15,7 @@ from pathlib import Path
 from pydantic import ValidationError
 
 from job_seeker import __version__
-from job_seeker.domain.models import SearchQuery, SearchResult, SortOrder
+from job_seeker.domain.models import DEFAULT_SCAN_DEPTH, SearchQuery, SearchResult, SortOrder
 from job_seeker.infrastructure.config.profile_loader import MarkdownProfileProvider, ProfileError
 from job_seeker.infrastructure.entrypoints.bounds import describe_bounds_error
 from job_seeker.infrastructure.entrypoints.search import execute_search
@@ -51,9 +51,10 @@ def _build_parser() -> argparse.ArgumentParser:
     find.add_argument(
         "--scan-depth",
         type=int,
-        default=50,
-        help="how many postings to read per board (default: 50). Raising this widens the pool a "
-        "result is chosen from; it does not lengthen the output.",
+        default=DEFAULT_SCAN_DEPTH,
+        help=f"how many postings to read per board (default: {DEFAULT_SCAN_DEPTH}). Lowering this "
+        "makes a search faster and its answer worse: it shrinks the pool a result is chosen from, "
+        "and it does not shorten the output.",
     )
     find.add_argument(
         "--max-results",
