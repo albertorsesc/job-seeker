@@ -33,12 +33,12 @@ dependencies = [
 # with the adapter that needs it.
 # The MCP server interface for local agents.
 #
-# Capped below 2.0 because the code only works on 1.x, and saying `>=1.2` claimed otherwise. The
-# 2.0 release of 2026-07-28 removed `mcp.server.fastmcp` entirely, renaming it to
-# `mcp.server.mcpserver` and `FastMCP` to `MCPServer`, so every install resolving 2.0 fails at
-# import. CI did not catch it for two weeks: the only runs since were Dependabot's, which do not
-# execute the test matrix, so the branch showed green while nothing exercised this code.
-mcp = ["mcp>=1.2,<2"]
+# Floored at 2.0 rather than spanning both majors. 2.0 moved `FastMCP` to
+# `mcp.server.mcpserver.MCPServer` and renamed the wire fields on its own models to snake_case, so
+# one codebase cannot satisfy both without branching on the SDK version in the entrypoint, and a
+# range that claims to support 1.x would be the same false declaration this line was written to
+# correct.
+mcp = ["mcp>=2,<3"]
 dev = [
     "pytest>=8.0",
     "pytest-asyncio>=0.23",

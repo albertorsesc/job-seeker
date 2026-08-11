@@ -40,7 +40,7 @@ _FIELD_PARAMS = {
 }
 
 if TYPE_CHECKING:
-    from mcp.server.fastmcp import FastMCP
+    from mcp.server.mcpserver import MCPServer
 
 # What the agent is told once, at connect, before it calls anything.
 #
@@ -82,23 +82,20 @@ _MISSING_SDK = (
 )
 
 
-def build_server() -> FastMCP:
+def build_server() -> MCPServer:
     """Construct the server and register its tools.
 
     Separate from `main` so the tools can be exercised in tests. `run()` blocks on stdio
     forever, so anything that calls it is untestable by construction.
     """
-    from mcp.server.fastmcp import FastMCP
+    from mcp.server.mcpserver import MCPServer
 
     register_builtins()  # composition root: wire the built-in adapters to the registry
 
-    server = FastMCP("job-seeker", instructions=_INSTRUCTIONS)
-
-    # FastMCP accepts no `version` argument as of SDK 1.28.1, and passes none to the underlying
-    # server, whose fallback reports the *SDK's* version. Left alone, every client, log and bug
-    # report sees "1.28.1" where job-seeker's own version belongs, and no release ever matches.
-    # The private attribute is the only route today; a test pins it so an SDK change is loud.
-    server._mcp_server.version = __version__
+    # The version is the engine's own, and it reaches the handshake every client reads. The SDK
+    # takes it as a constructor argument, so nothing here has to reach past the public surface to
+    # set it.
+    server = MCPServer("job-seeker", version=__version__, instructions=_INSTRUCTIONS)
 
     @server.tool()
     def list_sources() -> list[dict[str, Any]]:

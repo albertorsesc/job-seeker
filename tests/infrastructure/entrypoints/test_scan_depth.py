@@ -10,26 +10,26 @@ entrypoints, which a domain test may not do.
 
 from __future__ import annotations
 
-import inspect
+from typing import Any
 
 from job_seeker.domain.models import DEFAULT_SCAN_DEPTH
 from job_seeker.infrastructure.entrypoints import cli, mcp_server
+
+
+async def _published_default(parameter: str) -> Any:
+    """The default an agent reads off the published input schema for `find_jobs`."""
+    tools = await mcp_server.build_server().list_tools()
+    tool = next(t for t in tools if t.name == "find_jobs")
+    return tool.input_schema["properties"][parameter]["default"]
 
 
 class TestBothEntrypointsReadTheDeclaredDepth:
     def test_the_cli_flag_defaults_to_it(self) -> None:
         assert cli._build_parser().parse_args(["find"]).scan_depth == DEFAULT_SCAN_DEPTH
 
-    def test_the_mcp_tool_parameter_defaults_to_it(self) -> None:
-        tool = mcp_server.build_server()._tool_manager.get_tool("find_jobs")
-        assert tool is not None
-        assert inspect.signature(tool.fn).parameters["scan_depth"].default == DEFAULT_SCAN_DEPTH
-
-    def test_the_published_schema_shows_it_to_an_agent(self) -> None:
-        """An agent reads the default off the tool schema, not off the signature."""
-        tool = mcp_server.build_server()._tool_manager.get_tool("find_jobs")
-        assert tool is not None
-        assert tool.parameters["properties"]["scan_depth"]["default"] == DEFAULT_SCAN_DEPTH
+    async def test_the_published_schema_shows_it_to_an_agent(self) -> None:
+        """The schema is what an agent reads, so it is the copy that has to agree."""
+        assert await _published_default("scan_depth") == DEFAULT_SCAN_DEPTH
 
 
 class TestBothEntrypointsExposeTheFitFloor:
@@ -39,12 +39,5 @@ class TestBothEntrypointsExposeTheFitFloor:
     def test_the_cli_flag_defaults_to_no_filtering(self) -> None:
         assert cli._build_parser().parse_args(["find"]).min_fit == 0.0
 
-    def test_the_mcp_tool_parameter_defaults_to_no_filtering(self) -> None:
-        tool = mcp_server.build_server()._tool_manager.get_tool("find_jobs")
-        assert tool is not None
-        assert inspect.signature(tool.fn).parameters["min_fit"].default == 0.0
-
-    def test_the_published_schema_shows_it_to_an_agent(self) -> None:
-        tool = mcp_server.build_server()._tool_manager.get_tool("find_jobs")
-        assert tool is not None
-        assert tool.parameters["properties"]["min_fit"]["default"] == 0.0
+    async def test_the_published_schema_shows_it_to_an_agent(self) -> None:
+        assert await _published_default("min_fit") == 0.0

@@ -8,13 +8,15 @@ is exactly why `build_server()` exists separately. The end-to-end path is covere
 from __future__ import annotations
 
 import json
+import os
 import subprocess
 import sys
 from pathlib import Path
-from typing import Any, cast
+from typing import Any
 
 import pytest
-from mcp.server.fastmcp import FastMCP
+from mcp.server.mcpserver import MCPServer
+from mcp.types import CallToolResult
 
 from job_seeker import __version__
 from job_seeker.domain.models import (
@@ -37,18 +39,21 @@ from ..conftest import FakeSource
 
 
 async def _structured(
-    server: FastMCP, tool: str, arguments: dict[str, Any] | None = None
+    server: MCPServer, tool: str, arguments: dict[str, Any] | None = None
 ) -> dict[str, Any]:
     """Call a tool and return its structured payload.
 
-    The cast documents an SDK discrepancy rather than papering over one: as of mcp 1.28.1
-    `FastMCP.call_tool` is annotated `Sequence[ContentBlock] | dict[str, Any]` but actually
-    returns a `(content, structured)` tuple. The annotation is wrong, not our usage, and mypy is
-    right to object to indexing it. Pinned here in one place so an SDK fix shows up as one
-    failure instead of six.
+    Typed now: on 1.x `call_tool` was annotated `Sequence[ContentBlock] | dict[str, Any]` while
+    actually returning an undocumented `(content, structured)` tuple, and this helper existed to
+    hold the cast that papered over it in one place rather than six.
+
+    The narrowing is real rather than ceremony. 2.0 can also return `InputRequiredResult`, which is
+    a tool asking the caller for more input; none of ours elicits, so that arriving is a change in
+    behaviour worth failing on rather than a case to handle.
     """
     result = await server.call_tool(tool, arguments or {})
-    return cast(tuple[Any, dict[str, Any]], result)[1]
+    assert isinstance(result, CallToolResult)
+    return result.structured_content or {}
 
 
 def _write_profile(tmp_path: Path) -> Path:
@@ -137,12 +142,12 @@ class TestTheAgentIsToldWhatItWillReceive:
 
     async def test_find_jobs_publishes_an_output_schema(self) -> None:
         tool = await self._find_jobs_tool()
-        assert tool.outputSchema is not None
-        assert tool.outputSchema.get("properties", {}).keys() >= {"jobs", "coverage", "query"}
+        assert tool.output_schema is not None
+        assert tool.output_schema.get("properties", {}).keys() >= {"jobs", "coverage", "query"}
 
     @pytest.mark.parametrize("field", ["salary", "annual_minimum", "eligibility", "fit"])
     async def test_the_schema_describes_the_fields_an_agent_reasons_with(self, field: str) -> None:
-        assert field in json.dumps((await self._find_jobs_tool()).outputSchema)
+        assert field in json.dumps((await self._find_jobs_tool()).output_schema)
 
     @pytest.mark.parametrize(
         "owner,derived",
@@ -165,7 +170,7 @@ class TestTheAgentIsToldWhatItWillReceive:
         (`model_json_schema(schema_generator=StrictJsonSchema)`, no `mode=`), and a computed field
         is in the serialization schema only, so it would be missing from exactly this document.
         """
-        schema = (await self._find_jobs_tool()).outputSchema
+        schema = (await self._find_jobs_tool()).output_schema
         assert schema is not None
         published = {"SearchResult": schema, **schema["$defs"]}
         assert published[owner]["properties"][derived]["readOnly"] is True
@@ -173,7 +178,7 @@ class TestTheAgentIsToldWhatItWillReceive:
     async def test_the_schema_does_not_carry_maintainer_rationale(self) -> None:
         """The description text ships to every agent on every session, so it explains the payload
         rather than the project's history. These phrases were in it and are now in comments."""
-        schema = json.dumps((await self._find_jobs_tool()).outputSchema)
+        schema = json.dumps((await self._find_jobs_tool()).output_schema)
         for rationale in ("an earlier shape", "is a bug the whole", "Revisit if"):
             assert rationale not in schema
 
@@ -193,8 +198,7 @@ class TestTheAgentIsToldHowToUseTheEngine:
     """
 
     def test_the_handshake_carries_instructions(self) -> None:
-        options = mcp_server.build_server()._mcp_server.create_initialization_options()
-        assert options.instructions
+        assert mcp_server.build_server().instructions
 
     @pytest.mark.parametrize(
         "guidance",
@@ -207,13 +211,11 @@ class TestTheAgentIsToldHowToUseTheEngine:
         ],
     )
     def test_it_covers_what_an_agent_gets_wrong_unaided(self, guidance: str) -> None:
-        options = mcp_server.build_server()._mcp_server.create_initialization_options()
-        assert guidance in (options.instructions or "")
+        assert guidance in (mcp_server.build_server().instructions or "")
 
     def test_it_stays_short_enough_to_ship_every_session(self) -> None:
         """It is sent on every connect, so it is guidance, not a manual."""
-        options = mcp_server.build_server()._mcp_server.create_initialization_options()
-        assert len(options.instructions or "") < 2500
+        assert len(mcp_server.build_server().instructions or "") < 2500
 
 
 class TestDescriptionsAreTrimmedForContext:
@@ -272,12 +274,9 @@ class TestBuildServer:
         assert mcp_server.build_server().name == "job-seeker"
 
     def test_the_handshake_reports_our_version_not_the_sdks(self) -> None:
-        """FastMCP takes no `version` argument, so its fallback advertises the *SDK's* version.
-        Left alone the handshake says "1.28.1", which no job-seeker release will ever match.
-        This pins the private-attribute workaround so an SDK change is loud, not silent.
-        """
-        options = mcp_server.build_server()._mcp_server.create_initialization_options()
-        assert options.server_version == __version__
+        """Every client, log and bug report reads this. Unset, the SDK advertises its own version,
+        which no job-seeker release will ever match."""
+        assert mcp_server.build_server().version == __version__
 
     async def test_exposes_the_tools_an_agent_needs(self) -> None:
         tools = await mcp_server.build_server().list_tools()
@@ -479,3 +478,44 @@ class TestTheSdkImportStaysLazy:
             "is the job-seeker-mcp console script target, so that turns a missing extra into a "
             "traceback at startup instead of an install hint."
         )
+
+
+class TestItSpeaksToARealClientOverStdio:
+    """The only test here that leaves the process.
+
+    Everything else calls `build_server()` and inspects the object, which proves the tools are
+    registered but not that a client can reach them: the handshake, the transport and the
+    serialization are all unexercised by an in-process call. That gap is exactly how the SDK 2.0
+    break went unnoticed for two weeks while the suite stayed green.
+
+    No board is contacted. `list_sources` reports what is registered and whether each adapter can
+    run, which is answered without I/O.
+    """
+
+    async def test_a_client_completes_the_handshake_and_calls_a_tool(self, tmp_path: Path) -> None:
+        from mcp import ClientSession
+        from mcp.client.stdio import StdioServerParameters, stdio_client
+
+        parameters = StdioServerParameters(
+            command=sys.executable,
+            args=["-m", "job_seeker.infrastructure.entrypoints.mcp_server"],
+            env={
+                "JOB_SEEKER_PROFILE": str(_write_profile(tmp_path)),
+                "PATH": os.environ.get("PATH", ""),
+            },
+        )
+        async with stdio_client(parameters) as (read, write), ClientSession(read, write) as session:
+            initialized = await session.initialize()
+
+            # The handshake: what every client, log and bug report reads.
+            assert initialized.server_info.name == "job-seeker"
+            assert initialized.server_info.version == __version__
+            assert "describe_profile" in (initialized.instructions or "")
+
+            names = {tool.name for tool in (await session.list_tools()).tools}
+            assert names == {"list_sources", "describe_engine", "describe_profile", "find_jobs"}
+
+            called = await session.call_tool("list_sources", {})
+            assert called.is_error is False
+            boards = {board["name"] for board in (called.structured_content or {})["result"]}
+            assert {"himalayas", "remoteok", "remotive", "weworkremotely"} <= boards
