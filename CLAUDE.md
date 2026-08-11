@@ -160,8 +160,12 @@ is settled and fine.
 
 - **S:** an adapter fetches and normalizes one board; a domain service does one kind of reasoning; a
   reporter renders and never filters.
-- **O:** a new board is one new adapter plus a registry entry. Nothing else changes. The architecture
-  test is what keeps that true.
+- **O:** a new board is one new adapter plus a registry entry, plus whatever new names for the world
+  it introduces. The first three land in `sources/`; the last lands in `domain/regions.py` as data,
+  because a board that calls a country something no other board calls it is adding a spelling, not a
+  rule. WeWorkRemotely added eleven. That is the domain being extended through a table rather than
+  through code, and it is expected: a contributor editing `regions.py` for a new board has not done
+  something wrong. The architecture test is what keeps the rest true.
 - **L:** every source is substitutable behind `fetch(query) -> SourceResult`, and **must not raise**:
   a board being down is an expected outcome reported in `SourceResult.error`, not an exception, since
   siblings are in flight on other threads.
