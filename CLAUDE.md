@@ -86,19 +86,36 @@ project is a synthesis of what each does best, plus our own eligibility layer:
   `requires-python = ">=3.11"`. Local dev machine has Python 3.13.7.
 - **Version-gated syntax:** target 3.11, so use `typing.Protocol`, `X | Y` unions, `list[str]`. Do
   NOT use PEP 695 `class C[T]` generics (that is 3.12+); use `TypeVar` if generics are needed.
-- **MCP: official `mcp` Python SDK, version 1.28.1 installed.** Verified import path empirically
-  (a Context7 snippet showed a wrong `MCPServer` path that does not exist in the installed package):
+- **MCP: official `mcp` Python SDK, 2.x.** Every line below was verified by introspecting the
+  installed package, which is the only source worth trusting here: the 1.x note this replaces was
+  itself written after a documentation snippet described an `MCPServer` path that did not exist at
+  the time, and 2.0 then made that same name correct. Check the package, not the docs.
   ```python
-  from mcp.server.fastmcp import FastMCP
-  mcp = FastMCP("job-seeker")
+  from mcp.server.mcpserver import MCPServer
+  server = MCPServer("job-seeker", version=__version__, instructions="...")
 
-  @mcp.tool()
-  def find_jobs(...) -> dict: ...
+  @server.tool()
+  def find_jobs(...) -> SearchResult: ...
 
-  mcp.run(transport="stdio")   # run(transport: Literal["stdio","sse","streamable-http"]="stdio")
+  server.run(transport="stdio")   # Literal["stdio","sse","streamable-http"], default "stdio"
   ```
-  `@mcp.tool()` infers name/description/schema from the function name, docstring, and type hints.
-  Return pydantic models / TypedDict / dict for structured output.
+  `@server.tool()` infers name/description/schema from the function name, docstring and type hints.
+  Return pydantic models for structured output.
+
+  What changed from 1.x, and what each fact means for this codebase:
+  - `mcp.server.fastmcp.FastMCP` is gone; it is `mcp.server.mcpserver.MCPServer`.
+  - `version=` and `instructions=` are constructor arguments. The `_mcp_server` private attribute
+    no longer exists, and `server.version` / `server.instructions` are public properties.
+  - `call_tool` returns a typed `CallToolResult | InputRequiredResult`, not 1.x's undocumented
+    `(content, structured)` tuple. Narrow the union: nothing here elicits, so `InputRequiredResult`
+    arriving is a behaviour change worth failing on.
+  - **The SDK's own model fields are snake_case now**: `output_schema`, `input_schema`,
+    `structured_content`, `is_error`, `server_info`. This is the change most likely to bite,
+    because it fails at attribute access rather than at import.
+  - **The output schema is still built in validation mode**, so pydantic still omits
+    `computed_field` from it. That is why every derived value in the domain is a real field with a
+    validator and a `readOnly` marker, and it stays that way. Verified against the live schema.
+  - It still accepts an argument it does not know, silently (card 092). 2.0 does not fix that.
 - **Package manager:** `uv` (installed at `~/.local/bin/uv`). Build backend: `hatchling`.
 - **HTTP:** `httpx` (0.28.1). **HTML/RSS parsing:** `beautifulsoup4` (4.15) + `lxml` (6.1).
   **Validation/models:** `pydantic` v2 (2.13). **Front-matter:** `pyyaml` (6.0). Dates:
