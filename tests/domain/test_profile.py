@@ -180,6 +180,10 @@ class TestAnUnknownKeyIsAnError:
     def test_every_documented_key_still_loads(self) -> None:
         """The guard must reject what the schema does not know and nothing more, so the shipped
         template has to survive it."""
-        text = Path("examples/profile.example.md").read_text()
+        # Resolved from this file, not the working directory. A relative path here passes when
+        # pytest is invoked from the repo root and fails anywhere else, which makes the test a
+        # statement about how it was run rather than about the template.
+        template = Path(__file__).resolve().parents[2] / "examples" / "profile.example.md"
+        text = template.read_text()
         front = text.split("---")[1]
         assert Profile.model_validate(yaml.safe_load(front)).name == "Jane Doe"

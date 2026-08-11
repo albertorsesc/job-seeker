@@ -30,7 +30,13 @@ dependencies = [
 # Heavy / flaky mainstream-board scraping. Kept optional so the core stays lean.
 jobspy = ["python-jobspy>=1.1.80"]
 # The MCP server interface for local agents.
-mcp = ["mcp>=1.2"]
+#
+# Capped below 2.0 because the code only works on 1.x, and saying `>=1.2` claimed otherwise. The
+# 2.0 release of 2026-07-28 removed `mcp.server.fastmcp` entirely, renaming it to
+# `mcp.server.mcpserver` and `FastMCP` to `MCPServer`, so every install resolving 2.0 fails at
+# import. CI did not catch it for two weeks: the only runs since were Dependabot's, which do not
+# execute the test matrix, so the branch showed green while nothing exercised this code.
+mcp = ["mcp>=1.2,<2"]
 dev = [
     "pytest>=8.0",
     "pytest-asyncio>=0.23",
