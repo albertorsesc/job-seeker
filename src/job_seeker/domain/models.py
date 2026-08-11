@@ -8,13 +8,12 @@ from __future__ import annotations
 
 from datetime import UTC, datetime
 from enum import StrEnum
-from typing import Self
+from typing import Any, Self
 
 from pydantic import (
     BaseModel,
     ConfigDict,
     Field,
-    computed_field,
     field_validator,
     model_validator,
 )
@@ -164,6 +163,19 @@ class SalaryPeriod(StrEnum):
 # posting quoted hourly annualizes as though it were full-time, which overstates it. That is why
 # the annualized figures are exposed as separate fields rather than replacing what the board
 # published: the board's own numbers stay untouched and the derived ones are labelled derived.
+# Marks a field the engine derives and the consumer only ever receives. `readOnly` is the JSON
+# Schema way of saying so, and it is what makes a derived field honest as a real field: the
+# contract carries the value AND states that supplying it is meaningless.
+_DERIVED: dict[str, Any] = {"readOnly": True}
+
+
+def _annualize(value: Any, factor: float | None) -> float | None:
+    """One bound as a yearly figure, or None when either the bound or the period is unknown."""
+    if factor is None or not isinstance(value, int | float) or isinstance(value, bool):
+        return None
+    return round(float(value) * factor, 2)
+
+
 _PERIODS_PER_YEAR: dict[SalaryPeriod, float] = {
     SalaryPeriod.HOUR: 2080.0,
     SalaryPeriod.DAY: 260.0,
@@ -199,10 +211,6 @@ class SalaryRange(BaseModel):
     never on the raw figures: boards mix hourly and annual pay freely, so 85 and 146,000 can be the
     same currency on the same page. The annual figures are null when the period is unknown, and
     assume full time when it is.
-
-    `annual_minimum` and `annual_maximum` arrive in the payload but are absent from this schema,
-    because the MCP SDK publishes a validation-mode schema and pydantic omits computed fields from
-    it. They are there; read them.
     """
 
     model_config = ConfigDict(frozen=True)
@@ -228,29 +236,49 @@ class SalaryRange(BaseModel):
     # figures here.
     note: str = ""
 
-    @computed_field  # type: ignore[prop-decorator]
-    @property
-    def annual_minimum(self) -> float | None:
-        """The lower bound as a yearly figure, or None when the period is unknown.
+    # The comparable figures, derived from the bounds and the period on every construction.
+    #
+    # Real fields rather than `computed_field`, because they are part of the contract an MCP agent
+    # is handed and pydantic puts a computed field in the *serialization* schema only, while the
+    # SDK publishes the *validation* schema. A derived value absent from the contract describing it
+    # is a value the consumer has to be told about in prose, which is not a contract.
+    #
+    # `_derive_annual` recomputes them from the bounds on every construction, including from JSON,
+    # so they cannot be omitted, cannot drift, and cannot be faked by a caller.
+    annual_minimum: float | None = Field(
+        default=None,
+        json_schema_extra=_DERIVED,
+        description=(
+            "The lower bound as a yearly figure, assuming full time. Null when the period is "
+            "unknown, because a magnitude with no basis cannot be compared. Derived: sent to you, "
+            "never sent by you."
+        ),
+    )
+    annual_maximum: float | None = Field(
+        default=None,
+        json_schema_extra=_DERIVED,
+        description="The upper bound as a yearly figure. Derived; see annual_minimum.",
+    )
 
-        Serialized, because the consumer that most needs a comparable number is an agent on the
-        far side of the MCP wire, and it cannot convert without knowing the full-time assumption
-        baked into `_PERIODS_PER_YEAR`. None is the honest answer for an unknown period: a
-        magnitude alone cannot be compared, and inventing a basis is how an hourly rate comes to
-        be ranked as a salary.
+    @model_validator(mode="before")
+    @classmethod
+    def _derive_annual(cls, data: Any) -> Any:
+        """Annualize the bounds before validation, because this model is frozen.
+
+        `mode="after"` cannot assign on a frozen model, and unfreezing it to make the derivation
+        convenient would trade a real guarantee for a convenience: these are figures a board
+        reported, and nothing downstream may revise them.
         """
-        return self._annualized(self.minimum)
-
-    @computed_field  # type: ignore[prop-decorator]
-    @property
-    def annual_maximum(self) -> float | None:
-        """The upper bound as a yearly figure, or None when the period is unknown."""
-        return self._annualized(self.maximum)
-
-    def _annualized(self, value: float | None) -> float | None:
-        if value is None or self.period is None:
-            return None
-        return round(value * _PERIODS_PER_YEAR[self.period], 2)
+        if not isinstance(data, dict):
+            return data
+        period = data.get("period")
+        period = SalaryPeriod(period) if isinstance(period, str) else period
+        factor = _PERIODS_PER_YEAR.get(period) if period is not None else None
+        return {
+            **data,
+            "annual_minimum": _annualize(data.get("minimum"), factor),
+            "annual_maximum": _annualize(data.get("maximum"), factor),
+        }
 
     @model_validator(mode="after")
     def _says_something(self) -> Self:
@@ -360,12 +388,7 @@ class Relevance(BaseModel):
 
 
 class Eligibility(BaseModel):
-    """Whether, and how, the seeker can hold this role.
-
-    Carries a derived `is_eligible` boolean in the payload that is absent from this schema (the SDK
-    publishes a validation-mode schema, which omits computed fields). Use it rather than
-    reimplementing which of the seven statuses are holdable.
-    """
+    """Whether, and how, the seeker can hold this role."""
 
     status: EligibilityStatus
     # Required, not defaulted: the reason is the product. The classifier sets one on every path,
@@ -373,22 +396,19 @@ class Eligibility(BaseModel):
     # quietly accept an empty string.
     reason: str
 
-    @computed_field  # type: ignore[prop-decorator]
-    @property
-    def is_eligible(self) -> bool:
-        """Serialized, not merely computed.
+    is_eligible: bool = Field(
+        default=False,
+        json_schema_extra=_DERIVED,
+        description=(
+            "Whether this status is one the seeker can hold. Derived from `status`, so you never "
+            "have to reimplement which of the seven count. Sent to you, never sent by you."
+        ),
+    )
 
-        Which of seven statuses are holdable is domain knowledge, and the consumers that most
-        need it are on the far side of a wire: an MCP agent receiving `{"status":
-        "remote-verify"}` would otherwise have to reimplement ELIGIBLE_STATUSES to read it.
-
-        It is in the payload, not in the tool's published schema. A computed field appears in the
-        serialization schema only, and FastMCP builds its output schema in validation mode, where
-        computed fields are absent. `find_jobs` is annotated `-> dict[str, Any]` besides, so no
-        output schema is published at all. The agent receives this field and is not told to expect
-        it, which is worth fixing on the tool, not here.
-        """
-        return self.status in ELIGIBLE_STATUSES
+    @model_validator(mode="after")
+    def _derive_eligible(self) -> Self:
+        self.is_eligible = self.status in ELIGIBLE_STATUSES
+        return self
 
 
 class ScoredJob(BaseModel):
@@ -404,10 +424,16 @@ class ScoredJob(BaseModel):
     relevance: Relevance
     eligibility: Eligibility
 
-    @computed_field  # type: ignore[prop-decorator]
-    @property
-    def is_suitable(self) -> bool:
-        return self.eligibility.is_eligible
+    is_suitable: bool = Field(
+        default=False,
+        json_schema_extra=_DERIVED,
+        description="Whether the seeker can hold this posting. Derived from `eligibility`.",
+    )
+
+    @model_validator(mode="after")
+    def _derive_suitable(self) -> Self:
+        self.is_suitable = self.eligibility.is_eligible
+        return self
 
 
 class SourceOutcome(BaseModel):
@@ -428,10 +454,16 @@ class SourceOutcome(BaseModel):
     truncated: bool = False
     error: str = ""
 
-    @computed_field  # type: ignore[prop-decorator]
-    @property
-    def failed(self) -> bool:
-        return bool(self.error)
+    failed: bool = Field(
+        default=False,
+        json_schema_extra=_DERIVED,
+        description="Whether this source failed. Derived from `error` being non-empty.",
+    )
+
+    @model_validator(mode="after")
+    def _derive_failed(self) -> Self:
+        self.failed = bool(self.error)
+        return self
 
 
 class SourceResult(SourceOutcome):
@@ -456,12 +488,6 @@ class SourceCoverage(SourceOutcome):
 class SearchResult(BaseModel):
     """A finished run: the ranked postings, and the truth about how they were found.
 
-    Two derived booleans arrive in the payload and are NOT in this schema, because the MCP SDK
-    publishes a validation-mode schema and pydantic omits computed fields from it. Read them:
-    `all_sources_ran` is false when a board failed, which means whole categories of job are missing
-    from `jobs`; `fully_scanned` is false when a board was read only to `scan_depth_per_source`,
-    which is the ordinary case. Say so when reporting results if the first is false.
-
     Coverage travels with the jobs rather than going to a log, because the consumer that most
     needs it is an agent on the far end of an MCP call which never sees stderr. A run where
     three of five boards failed must not be indistinguishable from a healthy one, or the
@@ -473,31 +499,35 @@ class SearchResult(BaseModel):
     jobs: list[ScoredJob] = Field(default_factory=list)
     coverage: list[SourceCoverage] = Field(default_factory=list)
 
-    @computed_field  # type: ignore[prop-decorator]
-    @property
-    def all_sources_ran(self) -> bool:
-        """True when at least one source ran and none of them failed.
+    # The two honesty flags, derived from coverage on every construction.
+    #
+    # The `bool(self.coverage)` guard in each is the whole point: `any([])` is False, so without it
+    # a run where zero sources executed, the most incomplete run there is, would report itself as
+    # healthy. That failure is silent, because an empty result claiming to be complete looks
+    # exactly like "nothing matched".
+    #
+    # They are two flags rather than one because a single boolean covering both was false on every
+    # run, which is the same as being absent: a reader learns to skip it, and then skips it on the
+    # day a board is actually down.
+    all_sources_ran: bool = Field(
+        default=False,
+        json_schema_extra=_DERIVED,
+        description=(
+            "False when a board failed, which means whole categories of job are missing from "
+            "`jobs`. Say so when reporting results. Derived: sent to you, never sent by you."
+        ),
+    )
+    fully_scanned: bool = Field(
+        default=False,
+        json_schema_extra=_DERIVED,
+        description=(
+            "False when a board was read only as deep as `scan_depth_per_source`, which is the "
+            "ordinary case against a six-figure feed. Derived."
+        ),
+    )
 
-        The rare fact, and the alarming one. A board being unreachable means whole categories of
-        job are missing from the answer, and nothing else in the payload says so.
-
-        The `bool(self.coverage)` guard is the whole point: `any([])` is False, so without it a run
-        where zero sources executed, the most incomplete run there is, would report itself as
-        healthy. That failure is silent, because an empty result that claims to be complete looks
-        exactly like "nothing matched".
-        """
-        return bool(self.coverage) and not any(c.failed for c in self.coverage)
-
-    @computed_field  # type: ignore[prop-decorator]
-    @property
-    def fully_scanned(self) -> bool:
-        """True when every source was read to the end rather than capped.
-
-        The common fact, and a mild one. `max_results_per_source` defaults to 50 against a feed of
-        ~98,000, so an ordinary healthy run is not fully scanned and never will be.
-
-        Split from `all_sources_ran` because one boolean covering both was false on every single
-        run, which is the same as being absent: a reader learns to skip it, and then skips it on
-        the day a board is actually down. Two facts, two names, and the rare one stays rare.
-        """
-        return bool(self.coverage) and not any(c.truncated for c in self.coverage)
+    @model_validator(mode="after")
+    def _derive_coverage_flags(self) -> Self:
+        self.all_sources_ran = bool(self.coverage) and not any(c.failed for c in self.coverage)
+        self.fully_scanned = bool(self.coverage) and not any(c.truncated for c in self.coverage)
+        return self

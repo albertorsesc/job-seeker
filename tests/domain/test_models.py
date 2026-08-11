@@ -6,7 +6,7 @@ import json
 from collections.abc import Callable
 
 import pytest
-from pydantic import ValidationError
+from pydantic import BaseModel, ValidationError
 
 from job_seeker.domain.models import (
     ELIGIBLE_STATUSES,
@@ -20,6 +20,9 @@ from job_seeker.domain.models import (
     SalaryPeriod,
     SalaryRange,
     ScoredJob,
+    SearchQuery,
+    SearchResult,
+    SourceCoverage,
 )
 
 
@@ -379,3 +382,78 @@ class TestScoredJob:
             ),
         )
         assert not scored.is_suitable
+
+
+class TestDerivedValuesAreInThePublishedContract:
+    """Every derived value is a real field, so it appears in the validation schema the MCP tool
+    publishes and an agent can read it off the contract it was handed rather than off prose.
+
+    `computed_field` puts a value in the *serialization* schema only, which is the wrong one here.
+    A real field plus a validator that recomputes on every construction keeps everything that gave:
+    the value cannot drift, cannot be omitted, and cannot be faked by a caller. It adds the part
+    that matters: the field is in the contract, marked read-only.
+    """
+
+    DERIVED: tuple[tuple[type[BaseModel], str], ...] = (
+        (SearchResult, "all_sources_ran"),
+        (SearchResult, "fully_scanned"),
+        (Eligibility, "is_eligible"),
+        (ScoredJob, "is_suitable"),
+        (SourceCoverage, "failed"),
+        (SalaryRange, "annual_minimum"),
+        (SalaryRange, "annual_maximum"),
+    )
+
+    @pytest.mark.parametrize(
+        "model,field", DERIVED, ids=lambda v: v if isinstance(v, str) else v.__name__
+    )
+    def test_it_appears_in_the_validation_schema_the_sdk_publishes(
+        self, model: type[BaseModel], field: str
+    ) -> None:
+        assert field in model.model_json_schema()["properties"]
+
+    @pytest.mark.parametrize(
+        "model,field", DERIVED, ids=lambda v: v if isinstance(v, str) else v.__name__
+    )
+    def test_it_is_marked_read_only_so_a_caller_knows_not_to_send_it(
+        self, model: type[BaseModel], field: str
+    ) -> None:
+        assert model.model_json_schema()["properties"][field].get("readOnly") is True
+
+    def test_a_caller_cannot_fake_a_healthy_run(self) -> None:
+        """The property `computed_field` had and a plain field would lose. The validator recomputes,
+        so a payload claiming every board ran while carrying a failed one is corrected, not
+        believed."""
+        result = SearchResult(
+            query=SearchQuery(),
+            coverage=[SourceCoverage(source="a", error="boom")],
+            all_sources_ran=True,
+            fully_scanned=True,
+        )
+        assert result.all_sources_ran is False
+
+    def test_a_caller_cannot_fake_eligibility(self) -> None:
+        verdict = Eligibility(
+            status=EligibilityStatus.EXCLUDED_LOCATION, reason="restricted", is_eligible=True
+        )
+        assert verdict.is_eligible is False
+
+    def test_a_caller_cannot_fake_an_annual_figure(self) -> None:
+        salary = SalaryRange(minimum=85, period=SalaryPeriod.HOUR, annual_minimum=1)
+        assert salary.annual_minimum == 176_800
+
+    def test_the_values_survive_a_json_round_trip(self) -> None:
+        """They cross an MCP boundary, so the wire is where they have to hold."""
+        original = SearchResult(
+            query=SearchQuery(),
+            coverage=[SourceCoverage(source="a", scanned=5, truncated=True)],
+        )
+        restored = SearchResult.model_validate_json(original.model_dump_json())
+        assert (restored.all_sources_ran, restored.fully_scanned) == (True, False)
+
+    def test_omitting_them_entirely_still_yields_the_right_answer(self) -> None:
+        """No caller in this codebase passes them, and none should have to."""
+        salary = SalaryRange(minimum=120_000, period=SalaryPeriod.YEAR)
+        assert salary.annual_minimum == 120_000
+        assert SourceCoverage(source="a").failed is False
+        assert SourceCoverage(source="a", error="down").failed is True
