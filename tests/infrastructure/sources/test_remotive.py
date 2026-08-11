@@ -230,3 +230,48 @@ class TestRobustness:
 
     def test_it_is_always_available(self) -> None:
         assert RemotiveSource().is_available() is True
+
+
+class TestTimezoneBandsAreNotPlaces:
+    """The board writes both kinds of value into one comma-separated field. Measured on a live
+    window: four of twenty postings carried a band."""
+
+    def test_a_band_becomes_the_offsets_it_covers(self) -> None:
+        hints = _fetch([_job(candidate_required_location="USA timezones")]).jobs[0].hints
+        assert hints.timezone_restrictions == (-8.0, -7.0, -6.0, -5.0)
+
+    def test_a_band_alone_is_not_reported_as_a_place_restriction(self) -> None:
+        """The case that costs a job. Read as a place it matches no country and excludes, and a
+        seeker at UTC-6 sits inside this band."""
+        hints = _fetch([_job(candidate_required_location="USA timezones")]).jobs[0].hints
+        assert hints.location_restrictions is None
+
+    def test_places_and_bands_in_one_list_go_to_their_own_fields(self) -> None:
+        hints = (
+            _fetch([_job(candidate_required_location="USA, Canada, USA timezones")]).jobs[0].hints
+        )
+        assert hints.location_restrictions == ("USA", "Canada")
+        assert hints.timezone_restrictions == (-8.0, -7.0, -6.0, -5.0)
+
+    def test_a_list_of_places_alone_says_nothing_about_timezones(self) -> None:
+        """Not `()`, which would claim the board stated there is no timezone restriction."""
+        hints = _fetch([_job(candidate_required_location="Germany, France")]).jobs[0].hints
+        assert hints.timezone_restrictions is None
+
+    def test_an_unrecognized_band_keeps_excluding_rather_than_going_quiet(self) -> None:
+        hints = _fetch([_job(candidate_required_location="Asian timezones")]).jobs[0].hints
+        assert hints.location_restrictions == ("Asian timezones",)
+
+    def test_two_bands_merge_without_repeating_an_offset(self) -> None:
+        hints = (
+            _fetch(
+                [
+                    _job(
+                        candidate_required_location="USA timezones, US timezones, European timezones"
+                    )
+                ]
+            )
+            .jobs[0]
+            .hints
+        )
+        assert hints.timezone_restrictions == (-8.0, -7.0, -6.0, -5.0, 0.0, 1.0, 2.0)
