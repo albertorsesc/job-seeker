@@ -54,6 +54,12 @@ Pre-1.0 and not yet depended on, so these breaks are taken now rather than carri
   boards that failed, or a quieter line when a scan was merely capped. JSON and HTML carry coverage
   in the report, but CSV is a flat table of jobs with nowhere to put it, so a failed board there was
   a header row and silence.
+- The MCP server sends operating instructions at connect. Guidance that spans tools had nowhere
+  to live: a per-tool description cannot say "call `describe_profile` first", and the README is
+  written for a human who is not in the loop when an agent decides what to do. It covers the
+  fact-versus-lead meaning of each eligibility status, that a US company is not automatically out
+  of reach while a US-tagged posting is not rescued by being remote, which sort to prefer, and the
+  obligation to say when a run was partial.
 - `describe_profile`, an MCP tool reporting who the engine is searching as. Every verdict is a
   function of the profile, and a misconfigured one does not error, it answers confidently for the
   wrong person; an agent can now state whose profile it used before reporting results.

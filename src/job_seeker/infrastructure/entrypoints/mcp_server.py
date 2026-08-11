@@ -41,6 +41,39 @@ _FIELD_PARAMS = {
 if TYPE_CHECKING:
     from mcp.server.fastmcp import FastMCP
 
+# What the agent is told once, at connect, before it calls anything.
+#
+# Operating knowledge that spans tools has nowhere else to live: a per-tool description cannot say
+# "call this one first", and the README is written for a human who is not in the loop when the
+# agent decides what to do. Kept short because it ships on every session.
+_INSTRUCTIONS = """\
+This engine answers one question: which job postings can this specific person actually hold, and
+how well do they fit. Every verdict is a function of their profile, not of the request.
+
+Call `describe_profile` before reporting results the seeker will act on, and say whose profile you
+used. A misconfigured profile does not fail, it answers confidently for the wrong person: a real
+one silently claimed eligibility across the whole Americas and surfaced US-only roles to someone
+who cannot work in the United States.
+
+Read `eligibility.status` on every posting. It is the difference between a fact and a lead:
+  home-based / regional / global   the board stated this person may hold it. Trust it.
+  remote-verify                    nobody said. Worth checking, not worth asserting.
+  excluded-*                       the board ruled them out. These are already filtered out.
+
+A posting from a US company is not automatically out of reach, and one tagged for a country the
+seeker cannot work in is not rescued by being remote. Only the status matters, never the company's
+location or the word "remote" in the title.
+
+Prefer `sort="confidence"` for "what can I hold" questions: it puts everything a board cleared
+above everything nobody did, best fit first within each. Use `stated_only=True` only when the
+seeker wants a shortlist to apply to, since it hides leads entirely.
+
+Say when the answer is partial. `all_sources_ran=false` means a board failed and whole categories
+of job are missing. `fully_scanned=false` is ordinary and means the scan hit `scan_depth`.
+
+Results are a snapshot of a live, constantly-changing feed, not a reproducible query.
+"""
+
 _MISSING_SDK = (
     "The MCP server needs the optional 'mcp' extra, which is not installed.\n"
     "Reinstall with it:\n"
@@ -58,7 +91,7 @@ def build_server() -> FastMCP:
 
     register_builtins()  # composition root: wire the built-in adapters to the registry
 
-    server = FastMCP("job-seeker")
+    server = FastMCP("job-seeker", instructions=_INSTRUCTIONS)
 
     # FastMCP accepts no `version` argument as of SDK 1.28.1, and passes none to the underlying
     # server, whose fallback reports the *SDK's* version. Left alone, every client, log and bug
@@ -161,8 +194,9 @@ def build_server() -> FastMCP:
         board affirmatively cleared. Use it when the seeker asks what they can definitely hold;
         leave it off to see leads worth checking, which arrive as `remote-verify`.
 
-        `sort="confidence"` groups by how sure the eligibility verdict is before fit, so a certain
-        weak match outranks a likely one nobody cleared. Default `"fit"` does the opposite.
+        `sort="confidence"` puts every posting a board affirmatively cleared above every posting
+        nobody did, best fit first within each group, so a cleared weak match outranks an uncleared
+        strong one. Default `"fit"` ignores the distinction and ranks purely on match quality.
 
         Job descriptions are truncated in this payload; the full posting is at `job.url`.
         """

@@ -117,6 +117,39 @@ class TestTheAgentIsToldWhatItWillReceive:
         return next(tool for tool in tools if tool.name == "find_jobs")
 
 
+class TestTheAgentIsToldHowToUseTheEngine:
+    """Operating knowledge that spans tools has nowhere else to live.
+
+    A per-tool description cannot say "call this one first", and the README is written for a human
+    who is not in the loop when the agent decides what to do. Without this an agent reads
+    `eligibility.status` as a label rather than the fact-versus-lead distinction it is, and ranks
+    on fit alone.
+    """
+
+    def test_the_handshake_carries_instructions(self) -> None:
+        options = mcp_server.build_server()._mcp_server.create_initialization_options()
+        assert options.instructions
+
+    @pytest.mark.parametrize(
+        "guidance",
+        [
+            "describe_profile",  # the trust step, before reporting anything
+            "remote-verify",  # a lead, not a fact
+            "home-based",  # what a stated verdict looks like
+            "all_sources_ran",  # say when the answer is partial
+            "confidence",  # the sort to prefer for "what can I hold"
+        ],
+    )
+    def test_it_covers_what_an_agent_gets_wrong_unaided(self, guidance: str) -> None:
+        options = mcp_server.build_server()._mcp_server.create_initialization_options()
+        assert guidance in (options.instructions or "")
+
+    def test_it_stays_short_enough_to_ship_every_session(self) -> None:
+        """It is sent on every connect, so it is guidance, not a manual."""
+        options = mcp_server.build_server()._mcp_server.create_initialization_options()
+        assert len(options.instructions or "") < 2500
+
+
 class TestBuildServer:
     def test_builds_a_server_named_for_the_project(self) -> None:
         assert mcp_server.build_server().name == "job-seeker"
