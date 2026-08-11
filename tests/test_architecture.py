@@ -15,6 +15,7 @@ dynamic import is not something a hurried afternoon produces by accident, and th
 from __future__ import annotations
 
 import ast
+import re
 from pathlib import Path
 
 import pytest
@@ -255,3 +256,30 @@ class TestEveryLayerDeclaresItsContract:
         assert init.exists(), f"{layer}/__init__.py is missing"
         doc = ast.get_docstring(ast.parse(init.read_text()))
         assert doc, f"{layer}/__init__.py has no docstring stating the layer's contract"
+
+
+class TestCommentsDoNotCiteLineNumbers:
+    """A comment citing a module and a line number rots the moment anything above it moves.
+
+    Not a hypothetical. Two references written during one session pointed at the wrong lines by
+    the end of it: one citing line 138 of the Himalayas adapter had become line 154, and one
+    citing line 90 of the RemoteOK adapter had become line 107, both still describing code that
+    had shifted down. Nothing failed, because prose is not checked.
+
+    A symbol name costs the reader one grep and never goes stale, so the convention is to cite
+    `_normalize` rather than a line, and this makes the convention enforceable.
+    """
+
+    CITATION = re.compile(r"\b\w+\.py:\d+")
+
+    @pytest.mark.parametrize(
+        "path",
+        sorted([*PACKAGE_ROOT.rglob("*.py"), *(Path(__file__).parent).rglob("*.py")]),
+        ids=lambda p: p.name,
+    )
+    def test_no_source_file_cites_a_line_number(self, path: Path) -> None:
+        hits = self.CITATION.findall(path.read_text())
+        assert not hits, (
+            f"{path.name} cites {hits}. Line numbers rot: cite the symbol instead, which a "
+            f"reader can grep and which survives an edit above it."
+        )

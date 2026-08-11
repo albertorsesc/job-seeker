@@ -36,9 +36,9 @@ class TestEveryBuiltinHonorsTheContract:
 
         `JobSource.name` is a read-only property, which a plain attribute and a `@property` both
         satisfy; that breadth exists so a source whose name is instance state still conforms. An
-        adapter that ships here is held to the narrower rule, because `_normalize` is a module
-        function that builds `Job.source` from `TheSource.name` (himalayas.py:138, remoteok.py:90)
-        with no instance in hand. A property evaluates to the descriptor object there, and pydantic
+        adapter that ships here is held to the narrower rule, because each adapter's `_normalize`
+        is a module function that builds `Job.source` from `TheSource.name`, with no instance in
+        hand. A property evaluates to the descriptor object there, and pydantic
         rejects it as a non-string, so the failure lands in normalization rather than here.
 
         Read through `type(instance)` rather than off the factory: a factory may be a lambda

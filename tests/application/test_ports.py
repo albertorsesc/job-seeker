@@ -134,9 +134,9 @@ class TestBothNameShapesConform:
     def test_a_constant_name_is_readable_on_the_class_itself(self) -> None:
         """Why a shipped adapter uses the constant form.
 
-        `_normalize` is a module-level function that builds `Job.source` from `TheSource.name`
-        (himalayas.py:138, remoteok.py:90) with no instance in hand. A property there evaluates to
-        the descriptor object, not a string, and pydantic rejects it.
+        Each board adapter's `_normalize` is a module-level function that builds `Job.source`
+        from `TheSource.name`, with no instance in hand. A property there evaluates to the
+        descriptor object, not a string, and pydantic rejects it.
         """
         assert ConstantNameSource.name == "himalayas"
 
