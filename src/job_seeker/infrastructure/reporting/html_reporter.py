@@ -13,6 +13,7 @@ from __future__ import annotations
 from html import escape
 
 from job_seeker.domain.models import (
+    PostingHistory,
     SalaryPeriod,
     SalaryRange,
     ScoredJob,
@@ -36,6 +37,11 @@ h1 { margin-bottom: 0.25rem; }
 .matched { color: GrayText; font-size: 0.85rem; margin: 0.15rem 0 0; }
 .relevance { color: GrayText; font-size: 0.85rem; margin: 0.15rem 0 0; }
 .reason { color: GrayText; font-size: 0.9rem; margin-top: 0.25rem; }
+.badge.new { font-weight: 600; }
+.seen { color: GrayText; font-size: 0.85rem; margin: 0.15rem 0 0; }
+.mark { color: GrayText; font-size: 0.85rem; margin: 0.35rem 0 0; }
+.mark code { background: color-mix(in srgb, GrayText 12%, transparent); padding: 0.1rem 0.35rem;
+             border-radius: 0.25rem; user-select: all; }
 """.strip()
 
 
@@ -70,10 +76,13 @@ def _job_html(rank: int, scored: ScoredJob) -> str:
         f"  <h2>{rank}. {_title_html(job.title, job.url)}</h2>\n"
         f'  <p class="meta">{escape(job.company)} &middot; {escape(job.source)}{salary}</p>\n'
         f'  <p><span class="fit">fit {scored.fit.value:.0%}</span> &middot; '
-        f'<span class="badge">{escape(scored.eligibility.status.value)}</span></p>\n'
+        f'<span class="badge">{escape(scored.eligibility.status.value)}</span>'
+        f"{_history_badges(scored.history)}</p>\n"
         f"{_matched_html(scored.fit.matched)}"
         f'  <p class="relevance">relevant: {escape(scored.relevance.reason)}</p>\n'
         f'  <p class="reason">{escape(scored.eligibility.reason)}</p>\n'
+        f"{_seen_html(scored.history)}"
+        f"{_mark_html(scored.history)}"
         "</article>"
     )
 
@@ -173,3 +182,43 @@ def _source_summary(coverage: SourceCoverage) -> str:
         return f"{coverage.source}: failed ({coverage.error})"
     trunc = ", truncated" if coverage.truncated else ""
     return f"{coverage.source}: scanned {coverage.scanned}, kept {coverage.kept}{trunc}"
+
+
+def _history_badges(history: PostingHistory | None) -> str:
+    """NEW, and what the seeker already decided. Nothing at all when memory could not answer.
+
+    Silence rather than a "not new" badge: the page cannot tell the reader something the run could
+    not determine, and a badge that appears on every posting is one they stop seeing.
+    """
+    if history is None:
+        return ""
+    badges = ['<span class="badge new">NEW</span>'] if history.is_new else []
+    if history.decision is not None:
+        badges.append(f'<span class="badge">{escape(history.decision.value)}</span>')
+    return "".join(f" &middot; {badge}" for badge in badges)
+
+
+def _seen_html(history: PostingHistory | None) -> str:
+    """How often this posting has been shown before, and since when.
+
+    What lets a reader sanity-check a NEW badge instead of trusting it. A badge that is wrong is
+    then visible rather than merely wrong.
+    """
+    if history is None or history.first_seen_at is None or history.times_seen < 1:
+        return ""
+    since = history.first_seen_at.astimezone().strftime("%d %b")
+    times = "once" if history.times_seen == 1 else f"{history.times_seen} times"
+    return f'  <p class="seen">shown {times} since {escape(since)}</p>\n'
+
+
+def _mark_html(history: PostingHistory | None) -> str:
+    """The command to copy, under the posting it acts on.
+
+    The whole reason the report carries a handle at all. HTML is the default format, so without
+    this line the marking loop is unreachable from the output a seeker actually looks at: they
+    would have to re-run the search as JSON and dig the handle out by hand.
+    """
+    if history is None:
+        return ""
+    verb = "unmark" if history.decision is not None else "mark dismissed"
+    return f'  <p class="mark"><code>job-seeker {verb} {escape(history.handle)}</code></p>\n'

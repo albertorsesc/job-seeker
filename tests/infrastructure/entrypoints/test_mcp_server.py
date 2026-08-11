@@ -133,6 +133,98 @@ class TestFindJobsAppliesTheFitFloor:
         assert [job["job"]["title"] for job in filtered["jobs"]] == ["Python Engineer"]
 
 
+class TestAnAgentCanCloseTheLoop:
+    """Without these an agent can report what is new but cannot act on what the seeker tells it,
+    so the loop only half exists over MCP."""
+
+    @staticmethod
+    def _wire(monkeypatch: pytest.MonkeyPatch, tmp_path: Path) -> None:
+        monkeypatch.setenv("JOB_SEEKER_PROFILE", str(_write_profile(tmp_path)))
+        monkeypatch.setenv("JOB_SEEKER_STATE", str(tmp_path / "postings.jsonl"))
+        monkeypatch.setattr(
+            defaults,
+            "_BUILTINS",
+            {"fake": lambda: FakeSource("fake", jobs=[_fake_job("Python Engineer")])},
+        )
+
+    async def test_a_dismissed_posting_is_gone_from_the_next_search(
+        self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        self._wire(monkeypatch, tmp_path)
+        server = mcp_server.build_server()
+        first = await _structured(server, "find_jobs", {"terms": ["engineer"]})
+        handle = first["jobs"][0]["history"]["handle"]
+
+        await _structured(server, "mark_jobs", {"refs": [handle], "decision": "dismissed"})
+
+        second = await _structured(server, "find_jobs", {"terms": ["engineer"]})
+        assert second["jobs"] == []
+        assert second["memory"]["dismissed_hidden"] == 1
+
+    async def test_unmarking_puts_it_back(
+        self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        self._wire(monkeypatch, tmp_path)
+        server = mcp_server.build_server()
+        first = await _structured(server, "find_jobs", {"terms": ["engineer"]})
+        handle = first["jobs"][0]["history"]["handle"]
+        await _structured(server, "mark_jobs", {"refs": [handle], "decision": "dismissed"})
+        await _structured(server, "unmark_jobs", {"refs": [handle]})
+
+        third = await _structured(server, "find_jobs", {"terms": ["engineer"]})
+        assert len(third["jobs"]) == 1
+
+    async def test_a_reference_the_journal_does_not_know_is_refused_loudly(
+        self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        """An agent must never be able to tell the seeker "dismissed" for a ref it invented.
+
+        In-process the SDK lets the ValueError out; over the wire it reaches the client as an error
+        result. Either way the tool cannot answer as though it wrote something.
+        """
+        self._wire(monkeypatch, tmp_path)
+        server = mcp_server.build_server()
+        with pytest.raises(Exception, match="jk_deadbeefdeadbeef"):
+            await server.call_tool(
+                "mark_jobs", {"refs": ["jk_deadbeefdeadbeef"], "decision": "dismissed"}
+            )
+
+    async def test_nothing_is_written_when_one_reference_is_unknown(
+        self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        """All or nothing, proven by the state of the journal rather than by the message."""
+        self._wire(monkeypatch, tmp_path)
+        server = mcp_server.build_server()
+        first = await _structured(server, "find_jobs", {"terms": ["engineer"]})
+        handle = first["jobs"][0]["history"]["handle"]
+
+        with pytest.raises(Exception, match="jk_deadbeefdeadbeef"):
+            await server.call_tool(
+                "mark_jobs",
+                {"refs": [handle, "jk_deadbeefdeadbeef"], "decision": "dismissed"},
+            )
+
+        again = await _structured(server, "find_jobs", {"terms": ["engineer"]})
+        assert len(again["jobs"]) == 1  # the good ref was not dismissed either
+
+    async def test_new_only_narrows_the_second_search(
+        self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        self._wire(monkeypatch, tmp_path)
+        server = mcp_server.build_server()
+        await _structured(server, "find_jobs", {"terms": ["engineer"]})
+        again = await _structured(server, "find_jobs", {"terms": ["engineer"], "new_only": True})
+        assert again["jobs"] == []
+        assert again["memory"]["not_new_hidden"] == 1
+
+    async def test_the_instructions_define_newness_for_the_agent(self) -> None:
+        """Asserted verbatim, because prose is the part of this codebase with no other failing
+        state: it drifts from the code silently."""
+        instructions = mcp_server.build_server().instructions or ""
+        assert "first time the engine has shown the seeker that posting" in instructions
+        assert "Never infer it" in instructions
+
+
 class TestTheAgentIsToldWhatItWillReceive:
     """`find_jobs` returned `dict[str, Any]`, so `tools/list` published no output schema at all.
 
@@ -285,6 +377,8 @@ class TestBuildServer:
             "describe_engine",
             "describe_profile",
             "find_jobs",
+            "mark_jobs",
+            "unmark_jobs",
         }
 
     async def test_every_tool_carries_a_description_for_the_agent(self) -> None:
@@ -513,7 +607,14 @@ class TestItSpeaksToARealClientOverStdio:
             assert "describe_profile" in (initialized.instructions or "")
 
             names = {tool.name for tool in (await session.list_tools()).tools}
-            assert names == {"list_sources", "describe_engine", "describe_profile", "find_jobs"}
+            assert names == {
+                "list_sources",
+                "describe_engine",
+                "describe_profile",
+                "find_jobs",
+                "mark_jobs",
+                "unmark_jobs",
+            }
 
             called = await session.call_tool("list_sources", {})
             assert called.is_error is False
