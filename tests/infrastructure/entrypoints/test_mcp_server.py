@@ -17,7 +17,19 @@ import pytest
 from mcp.server.fastmcp import FastMCP
 
 from job_seeker import __version__
-from job_seeker.domain.models import EligibilityHints, Job, SearchQuery, SourceResult
+from job_seeker.domain.models import (
+    Eligibility,
+    EligibilityHints,
+    EligibilityStatus,
+    FitScore,
+    Job,
+    Relevance,
+    ScoredJob,
+    SearchQuery,
+    SearchResult,
+    SourceCoverage,
+    SourceResult,
+)
 from job_seeker.infrastructure.entrypoints import mcp_server
 from job_seeker.infrastructure.sources import defaults, registry
 
@@ -148,6 +160,57 @@ class TestTheAgentIsToldHowToUseTheEngine:
         """It is sent on every connect, so it is guidance, not a manual."""
         options = mcp_server.build_server()._mcp_server.create_initialization_options()
         assert len(options.instructions or "") < 2500
+
+
+class TestDescriptionsAreTrimmedForContext:
+    """A broad live search cost an agent roughly 29,000 tokens, four fifths of it descriptions.
+
+    The SDK sends the payload twice, once as text for the model and once as structured content, so
+    the cost doubles. The engine has already finished reasoning over the full description by the
+    time this runs: scoring, eligibility and relevance all read it upstream. What reaches the agent
+    only has to be enough to recognise the role.
+    """
+
+    def test_a_long_description_is_cut_and_says_so(self) -> None:
+        trimmed = mcp_server._trim("word " * 400)
+        assert len(trimmed) < 700
+        assert trimmed.endswith("[truncated, full posting at the job url]")
+
+    def test_it_cuts_on_a_word_boundary(self) -> None:
+        """A cut mid-word reads as a typo rather than a truncation."""
+        trimmed = mcp_server._trim("alpha bravo " * 200)
+        body = trimmed.replace(" [truncated, full posting at the job url]", "")
+        assert body.split()[-1] in {"alpha", "bravo"}
+
+    def test_a_short_description_is_left_exactly_alone(self) -> None:
+        assert mcp_server._trim("Build RAG systems.") == "Build RAG systems."
+
+    def test_trimming_happens_at_the_boundary_not_in_the_pipeline(self) -> None:
+        """The full text is what the scorer and the classifier read, so shortening it upstream
+        would change which jobs are found rather than only what is reported."""
+        long_text = "python " * 400
+        job = Job(
+            title="AI Engineer",
+            company="Acme",
+            url="https://a/1",
+            source="s",
+            description=long_text,
+        )
+        result = SearchResult(
+            query=SearchQuery(),
+            jobs=[
+                ScoredJob(
+                    job=job,
+                    fit=FitScore(),
+                    relevance=Relevance(keep=True, reason="r"),
+                    eligibility=Eligibility(status=EligibilityStatus.GLOBAL, reason="ok"),
+                )
+            ],
+            coverage=[SourceCoverage(source="s", scanned=1, kept=1)],
+        )
+        trimmed = mcp_server._fit_for_context(result)
+        assert len(trimmed.jobs[0].job.description) < len(long_text)
+        assert result.jobs[0].job.description == long_text  # the original is untouched
 
 
 class TestBuildServer:
