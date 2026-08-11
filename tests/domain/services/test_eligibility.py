@@ -56,6 +56,26 @@ class TestStructuredLocation:
         job = make_job(hints=EligibilityHints(location_restrictions=("United States", "Canada")))
         assert _classify(job) == S.EXCLUDED_LOCATION
 
+    def test_a_board_that_names_countries_the_iso_way_still_matches_the_profile(
+        self, make_job: Callable[..., Job]
+    ) -> None:
+        """WeWorkRemotely stores ISO 3166 official names, so its US-only postings arrive as
+        "United States of America". Compared as strings that is a country nobody lives in, and a
+        US-based seeker gets told they cannot hold a job at home."""
+        seeker = Profile(
+            location=LocationProfile(country="United States", timezone_utc_offset=-5.0),
+            eligibility=EligibilityRules(eligible_regions=["united states"]),
+        )
+        job = make_job(hints=EligibilityHints(location_restrictions=("United States of America",)))
+        assert EligibilityClassifier(seeker).classify(job).status == S.HOME_BASED
+
+    def test_a_us_only_posting_still_excludes_a_latam_seeker_under_the_iso_name(
+        self, make_job: Callable[..., Job]
+    ) -> None:
+        """The same canonicalization, in the direction that costs a seeker money if it slips."""
+        job = make_job(hints=EligibilityHints(location_restrictions=("United States of America",)))
+        assert _classify(job) == S.EXCLUDED_LOCATION
+
 
 class TestStructuredTimezone:
     def test_a_timezone_within_range_is_allowed(self, make_job: Callable[..., Job]) -> None:

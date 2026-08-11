@@ -23,7 +23,7 @@ from collections.abc import Iterable
 
 from job_seeker.domain.models import Eligibility, EligibilityStatus, Job
 from job_seeker.domain.profile import Profile
-from job_seeker.domain.regions import expand_place
+from job_seeker.domain.regions import canonical_place, expand_place
 
 # Phrases in posting text that mean "hireable anywhere". Multi-word on purpose: a bare "global"
 # or "globally" is marketing filler ("global SaaS company", "globally distributed") and would
@@ -53,7 +53,7 @@ class EligibilityClassifier:
         self._home = profile.location.country.strip().lower()
         # The placeholder default is not a real country, so it must not match anything.
         self._home_is_real = bool(self._home) and self._home != "worldwide"
-        self._home_place = _normalize_place(self._home)
+        self._home_place = canonical_place(_normalize_place(self._home))
         # Every place the profile accepts: each eligible region plus, if it is a known region, its
         # member countries. So "latam" accepts a "Brazil" restriction, and the text path recognizes
         # a member country mentioned in prose.
@@ -97,6 +97,10 @@ class EligibilityClassifier:
         expanded places (a country, or a region plus its member countries) intersect the profile's
         accepted places, so a "Brazil" restriction matches a "latam" profile and a "Europe"
         restriction matches a "Portugal" profile, in both directions.
+
+        Canonicalized before any of that, so the comparison is between places rather than between
+        spellings: a board storing ISO names says "United States of America" for the country a
+        profile calls "United States".
         """
         restrictions = job.hints.location_restrictions
         if restrictions is None:  # the board said nothing about location
@@ -105,7 +109,7 @@ class EligibilityClassifier:
             return Eligibility(
                 status=EligibilityStatus.GLOBAL, reason="open to applicants anywhere"
             )
-        stated = [_normalize_place(r) for r in restrictions]
+        stated = [canonical_place(_normalize_place(r)) for r in restrictions]
         if any(place in _OPEN_PLACES for place in stated):
             return Eligibility(status=EligibilityStatus.GLOBAL, reason="open worldwide")
         if self._home_is_real and self._home_place in stated:

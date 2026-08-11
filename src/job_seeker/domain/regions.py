@@ -42,9 +42,12 @@ _LATAM = frozenset(
         "nicaragua",
         "el salvador",
         "dominican republic",
+        "belize",
+        "jamaica",
+        "haiti",
     }
 )
-_NORTH_AMERICA = frozenset({"united states", "usa", "canada", "mexico"})
+_NORTH_AMERICA = frozenset({"united states", "canada", "mexico"})
 _EUROPE = frozenset(
     {
         "portugal",
@@ -56,7 +59,6 @@ _EUROPE = frozenset(
         "belgium",
         "ireland",
         "united kingdom",
-        "uk",
         "poland",
         "sweden",
         "norway",
@@ -65,7 +67,6 @@ _EUROPE = frozenset(
         "austria",
         "switzerland",
         "czechia",
-        "czech republic",
         "romania",
         "greece",
         "hungary",
@@ -77,19 +78,29 @@ _EUROPE = frozenset(
         "slovakia",
         "slovenia",
         "ukraine",
+        "albania",
+        "andorra",
+        "bosnia and herzegovina",
+        "cyprus",
+        "luxembourg",
+        "malta",
+        "moldova",
+        "montenegro",
+        "north macedonia",
+        "serbia",
     }
 )
 _AFRICA = frozenset(
     {"nigeria", "kenya", "south africa", "egypt", "ghana", "morocco", "tunisia", "uganda"}
 )
 _MIDDLE_EAST = frozenset(
-    {"israel", "turkey", "united arab emirates", "uae", "saudi arabia", "qatar", "jordan"}
+    {"israel", "turkey", "united arab emirates", "saudi arabia", "qatar", "jordan", "kuwait"}
 )
-_APAC = frozenset(
+_OCEANIA = frozenset({"australia", "new zealand", "papua new guinea"})
+# Asia Pacific covers Oceania, so it is composed from it rather than restating its members.
+_APAC = _OCEANIA | frozenset(
     {
         "india",
-        "australia",
-        "new zealand",
         "japan",
         "singapore",
         "philippines",
@@ -106,6 +117,31 @@ _APAC = frozenset(
 _AMERICAS = _LATAM | _NORTH_AMERICA
 _EMEA = _EUROPE | _MIDDLE_EAST | _AFRICA
 
+# One agreed spelling per country, so two boards naming the same place compare equal.
+#
+# The long forms are ISO 3166 official names, which is the vocabulary WeWorkRemotely stores: a
+# US-only posting arrives from it as "United States of America" where the profile and every other
+# board say "United States". Read as distinct countries, a seeker is told they cannot hold a job at
+# home. The short forms go the same way, and used to sit in the member sets as duplicate entries,
+# which made a region contain one country twice and still left the home-country check comparing
+# strings.
+COUNTRY_ALIASES: dict[str, str] = {
+    "united states of america": "united states",
+    "usa": "united states",
+    "united kingdom of great britain and northern ireland": "united kingdom",
+    "uk": "united kingdom",
+    "korea (republic of)": "south korea",
+    "moldova (republic of)": "moldova",
+    "bolivia (plurinational state of)": "bolivia",
+    "viet nam": "vietnam",
+    "czech republic": "czechia",
+    "uae": "united arab emirates",
+    # Puerto Rico is US territory, so holding a role there takes US work authorization. This map
+    # answers "may the seeker hold it", so the territory follows the authorization rather than the
+    # geography, and a LATAM seeker is correctly excluded from a Puerto Rico posting.
+    "puerto rico": "united states",
+}
+
 # Region name (and its aliases) -> member countries. Aliases share one country set.
 REGION_MEMBERS: dict[str, frozenset[str]] = {
     "latam": _LATAM,
@@ -120,8 +156,14 @@ REGION_MEMBERS: dict[str, frozenset[str]] = {
     "apac": _APAC,
     "asia pacific": _APAC,
     "asia": _APAC,
-    "oceania": frozenset({"australia", "new zealand"}),
+    "oceania": _OCEANIA,
 }
+
+
+def canonical_place(place: str) -> str:
+    """The one spelling of a place this map reasons in. Already-canonical and unknown names pass
+    through, so a country the map has never heard of still compares equal to itself."""
+    return COUNTRY_ALIASES.get(place, place)
 
 
 def expand_place(place: str) -> set[str]:
@@ -130,5 +172,9 @@ def expand_place(place: str) -> set[str]:
     A country expands to just itself, so intersecting two expanded places answers "could a seeker
     who accepts A hold a job restricted to B" in both directions: a profile region against a country
     restriction, and a country home against a region restriction.
+
+    Canonical first, so the two sides of that intersection are in one vocabulary however the board
+    and the profile each spelled their country.
     """
+    place = canonical_place(place)
     return {place} | set(REGION_MEMBERS.get(place, frozenset()))
