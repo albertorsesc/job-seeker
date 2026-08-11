@@ -170,6 +170,7 @@ _SPELLINGS: dict[str, str] = {
     "czech republic": "czechia",
     "uae": "united arab emirates",
     "northern america": "north america",
+    "european": "europe",
 }
 
 # Places whose work authorization is another country's.

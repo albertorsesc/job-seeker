@@ -36,6 +36,7 @@ from job_seeker.domain.models import (
     SearchQuery,
     SourceResult,
 )
+from job_seeker.domain.timezones import offsets_for_band
 from job_seeker.infrastructure.sources import base
 
 _API_URL = "https://remotive.com/api/remote-jobs"
@@ -142,19 +143,38 @@ def _published(value: Any) -> datetime | None:
 def _hints(record: dict[str, Any]) -> EligibilityHints:
     """`candidate_required_location` as structured restrictions.
 
-    A comma-separated place list, reported as the board wrote it: the classifier normalizes and
-    expands places itself, and an adapter that pre-interpreted "Worldwide" would be deciding
-    eligibility rather than reporting a fact.
+    A comma-separated list, reported as the board wrote it: the classifier normalizes and expands
+    places itself, and an adapter that pre-interpreted "Worldwide" would be deciding eligibility
+    rather than reporting a fact.
 
-    An empty string is `None`, not `()`. The board saying nothing and the board saying "no
-    restriction" are different claims, and collapsing them is the failure the whole eligibility
-    layer is built around.
+    The list holds two kinds of value, which is this board's dialect and so is settled here. Most
+    are places ("Germany", "Europe", "Worldwide"), but some are timezone bands: four of twenty
+    postings in one live window carried "European timezones" or "USA timezones". A band is not a
+    place and matches no country, so left in the place list it pushes a posting toward
+    `excluded-location` on the strength of a value nobody read. For a band the seeker sits inside
+    that is a job refused: someone at UTC-6 meets "USA timezones".
+
+    An empty string is `None`, not `()`, on both fields. The board saying nothing and the board
+    saying "no restriction" are different claims, and collapsing them is the failure the whole
+    eligibility layer is built around.
     """
     raw = str(record.get("candidate_required_location") or "").strip()
     if not raw:
         return EligibilityHints()
-    places = tuple(part.strip() for part in raw.split(",") if part.strip())
-    return EligibilityHints(location_restrictions=places or None)
+    places: list[str] = []
+    offsets: set[float] = set()
+    for value in (part.strip() for part in raw.split(",")):
+        if not value:
+            continue
+        band = offsets_for_band(value)
+        if band is None:
+            places.append(value)
+        else:
+            offsets.update(band)
+    return EligibilityHints(
+        location_restrictions=tuple(places) or None,
+        timezone_restrictions=tuple(sorted(offsets)) or None,
+    )
 
 
 def _salary(text: str) -> SalaryRange | None:

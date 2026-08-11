@@ -54,6 +54,10 @@ project is a synthesis of what each does best, plus our own eligibility layer:
 - **Remotive**: `GET https://remotive.com/api/remote-jobs?category=software-dev`. Under load it
   throttles and ignores `search=`/`category=` (returns the same ~39). Fields: `title, company_name,
   description, url, publication_date, salary, candidate_required_location, job_type`.
+  `candidate_required_location` holds two kinds of value in one comma-separated list: places
+  ("Germany", "Europe", "Worldwide") and timezone bands ("European timezones", "USA timezones",
+  4 of 20 postings in one window). A band is not a place, and the adapter routes it to
+  `timezone_restrictions` so the timezone rule reads it.
 - **RemoteOK**: `GET https://remoteok.com/api`. First array element is legal boilerplate, skip it.
   Filter by `tags`. Default DevJobsHub filter is dev-only; **broaden** to include ai/ml/llm/
   machine-learning/data tags. Fields: `position, company, description, url, date, tags, salary_min,
