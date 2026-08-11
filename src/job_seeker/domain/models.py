@@ -74,6 +74,13 @@ class SortOrder(StrEnum):
     CONFIDENCE = "confidence"
 
 
+# How many postings a board is read for, by default and at most.
+#
+# One number, declared here, because the CLI and the MCP tool both have to state it and two
+# hardcoded copies that must agree will drift. Each entrypoint reads it rather than restating it.
+DEFAULT_SCAN_DEPTH = 1000
+
+
 class SearchQuery(BaseModel):
     """A request for postings, interpreted by each source in its own dialect."""
 
@@ -91,7 +98,14 @@ class SearchQuery(BaseModel):
     # Bounded because an MCP tool exposes it to an agent that picks the number. Unbounded, a large
     # value walks every page of a six-figure feed, and a negative one means whatever each adapter's
     # slicing happens to do.
-    scan_depth_per_source: int = Field(default=50, ge=1, le=1000)
+    #
+    # The default is the ceiling, because reading shallowly was measurably costing the answer. At
+    # 50 the largest board contributed nothing at all: its feed is recency-ordered across every
+    # category, so the first 50 postings are simply the newest 50, and none of them survived to the
+    # ranking. Measured on one profile, raising it to 1000 took a search from about 1 second to
+    # about 13, moved the best eligible match from 34% fit to 52%, and put three roles from that
+    # board into the top five. Time is the cheap resource here and the pool is the scarce one.
+    scan_depth_per_source: int = Field(default=DEFAULT_SCAN_DEPTH, ge=1, le=DEFAULT_SCAN_DEPTH)
     # How many ranked results to return. None means all of them. This is the one a caller wanting a
     # shorter list actually wants, and it applies after ranking, so it keeps the best rather than
     # the first fetched.
@@ -105,6 +119,18 @@ class SearchQuery(BaseModel):
     # `include_unverified` is the standing preference; this narrows further and never widens, so a
     # seeker who has already opted out of unverified postings cannot accidentally opt back in.
     stated_only: bool = False
+    # Drop postings below this fit, for this search only. 0.0 keeps everything, which is the
+    # default and the only value that means "no fit filtering".
+    #
+    # It earns its place because ranking alone stopped being enough once the engine read deeply.
+    # Measured on one profile against a full-depth run: 50 postings survived eligibility, the best
+    # fitting 52%, and the median 4%. The list is mostly postings the seeker will never want, and
+    # it is the ranking that hides that rather than the filter.
+    #
+    # Compared against `FitScore.value`, which is the share of the profile's whole weight a posting
+    # matched, so a useful threshold is far below what the word "percent" suggests: no real posting
+    # names every skill a seeker has.
+    min_fit: float = Field(default=0.0, ge=0.0, le=1.0)
     sort: SortOrder = SortOrder.FIT
 
 

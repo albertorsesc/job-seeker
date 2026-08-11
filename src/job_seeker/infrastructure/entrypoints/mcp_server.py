@@ -19,7 +19,7 @@ from typing import TYPE_CHECKING, Any
 from pydantic import ValidationError
 
 from job_seeker import __version__
-from job_seeker.domain.models import SearchQuery, SearchResult, SortOrder
+from job_seeker.domain.models import DEFAULT_SCAN_DEPTH, SearchQuery, SearchResult, SortOrder
 from job_seeker.infrastructure.config.profile_loader import (
     MarkdownProfileProvider,
     ProfileError,
@@ -33,6 +33,7 @@ from job_seeker.infrastructure.sources.defaults import register_builtins
 # flags; the two differ on purpose, since an agent passes `limit` where a seeker types `--limit`.
 _FIELD_PARAMS = {
     "scan_depth_per_source": "scan_depth",
+    "min_fit": "min_fit",
     "max_results": "max_results",
     "max_age_days": "max_age_days",
     "terms": "terms",
@@ -165,9 +166,10 @@ def build_server() -> FastMCP:
     @server.tool()
     def find_jobs(
         terms: list[str] | None = None,
-        scan_depth: int = 50,
+        scan_depth: int = DEFAULT_SCAN_DEPTH,
         max_results: int | None = None,
         max_age_days: int = 30,
+        min_fit: float = 0.0,
         stated_only: bool = False,
         sort: SortOrder = SortOrder.FIT,
         sources: list[str] | None = None,
@@ -208,6 +210,7 @@ def build_server() -> FastMCP:
             query = SearchQuery(
                 terms=terms or profile.search_terms,
                 scan_depth_per_source=scan_depth,
+                min_fit=min_fit,
                 max_results=max_results,
                 max_age_days=max_age_days,
                 stated_only=stated_only,

@@ -36,7 +36,9 @@ from job_seeker.infrastructure.sources import defaults, registry
 from ..conftest import FakeSource
 
 
-async def _structured(server: FastMCP, tool: str) -> dict[str, Any]:
+async def _structured(
+    server: FastMCP, tool: str, arguments: dict[str, Any] | None = None
+) -> dict[str, Any]:
     """Call a tool and return its structured payload.
 
     The cast documents an SDK discrepancy rather than papering over one: as of mcp 1.28.1
@@ -45,7 +47,7 @@ async def _structured(server: FastMCP, tool: str) -> dict[str, Any]:
     right to object to indexing it. Pinned here in one place so an SDK fix shows up as one
     failure instead of six.
     """
-    result = await server.call_tool(tool, {})
+    result = await server.call_tool(tool, arguments or {})
     return cast(tuple[Any, dict[str, Any]], result)[1]
 
 
@@ -89,6 +91,41 @@ class TestFindJobsRejectsOutOfRangeArgumentsInTheAgentsOwnWords:
         message = str(caught.value)
         assert expected in message
         assert "scan_depth_per_source" not in message or expected == "scan_depth_per_source"
+
+
+def _fake_job(title: str) -> Job:
+    return Job(
+        title=title,
+        company="Acme",
+        url=f"https://a/{title}".replace(" ", "-"),
+        source="fake",
+        hints=EligibilityHints(location_restrictions=()),
+    )
+
+
+class TestFindJobsAppliesTheFitFloor:
+    """A parameter an agent can pass and the search never sees is a parameter that lies."""
+
+    async def test_a_floor_the_agent_sets_narrows_the_answer(
+        self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        monkeypatch.setenv("JOB_SEEKER_PROFILE", str(_write_profile(tmp_path)))
+        monkeypatch.setattr(
+            defaults,
+            "_BUILTINS",
+            {
+                "fake": lambda: FakeSource(
+                    "fake",
+                    jobs=[_fake_job("Python Engineer"), _fake_job("Warehouse Engineer")],
+                )
+            },
+        )
+        server = mcp_server.build_server()
+        unfiltered = await _structured(server, "find_jobs", {"terms": ["engineer"]})
+        assert len(unfiltered["jobs"]) == 2  # both are on-topic; one just fits badly
+
+        filtered = await _structured(server, "find_jobs", {"terms": ["engineer"], "min_fit": 0.5})
+        assert [job["job"]["title"] for job in filtered["jobs"]] == ["Python Engineer"]
 
 
 class TestTheAgentIsToldWhatItWillReceive:

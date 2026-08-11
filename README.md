@@ -82,17 +82,18 @@ backstop, but the rule is to keep the file outside the tree.
 ```bash
 job-seeker sources                    # which boards exist, and whether each can run right now
 job-seeker find --terms "AI Engineer" --format json | jq '.jobs[0]'
-job-seeker find --scan-depth 300 --max-results 10 --format html --out report.html
+job-seeker find --max-results 10 --format html --out report.html
 ```
 
 | flag | what it does |
 |---|---|
 | `--terms` | comma-separated search terms. Defaults to your profile's `search_terms` |
-| `--scan-depth` | how many postings to **read** per board (default 50). Widens the pool an answer is chosen from |
+| `--scan-depth` | how many postings to **read** per board (default 1000, which is also the most it will read). Lowering it makes a search faster and its answer worse |
 | `--max-results` | how many ranked results to **return**. Applied after ranking, so it keeps the best |
 | `--max-age-days` | ignore postings older than this (default 30) |
 | `--stated-only` | only postings a board affirmatively cleared, dropping `remote-verify` |
 | `--sort` | `fit` (default) or `confidence`, which puts everything a board cleared above everything nobody did |
+| `--min-fit` | drop postings below this fit, 0.0 to 1.0 (default 0.0, keep everything) |
 | `--sources` | restrict to named boards. A typo is refused rather than silently searching fewer |
 | `--format` | `html` (default), `json`, or `csv` |
 | `--out` | write to a file instead of stdout |
@@ -100,6 +101,19 @@ job-seeker find --scan-depth 300 --max-results 10 --format html --out report.htm
 `--scan-depth` and `--max-results` are deliberately separate. Reading more postings costs time and
 politeness; returning fewer costs nothing. Asking for a short list by scanning less would hand you
 the first few postings found rather than the best ones.
+
+`--min-fit` is the other half of reading deeply. Fit is the share of your **whole** profile a
+posting matched, so no real posting scores near 100: on one profile a full-depth run left 50
+holdable postings whose best fit was 52% and whose median was 4%. Ranking puts the good ones first,
+and a floor removes the tail entirely. Read a few results first, then set the floor from what you
+saw, because the right number depends on how broad your profile is.
+
+The depth ships at its maximum because reading shallowly measurably costs the answer. Boards order
+their feeds by recency, not by how well a posting suits you, so a shallow scan reads the newest
+postings rather than the best ones. On one profile, a depth of 50 read 180 postings in about a
+second and the largest board contributed nothing at all; 1000 read 1,220 in about thirteen seconds,
+moved the best eligible match from 34% to 52% fit, and put three roles from that board in the top
+five. Thirteen seconds is the cheap resource; the pool is the scarce one.
 
 ### "US job, but open to remote"
 
@@ -191,7 +205,7 @@ Four tools, and the agent is meant to use them together:
 | `describe_engine` | Is this configured and able to search? Names the problem when it is not |
 | `describe_profile` | **Who am I searching as?** Your name, location, skills, and the eligibility rules that decide every verdict |
 | `list_sources` | Which boards exist, and can each one run right now |
-| `find_jobs` | The search. `terms`, `scan_depth`, `max_results`, `max_age_days`, `sources` |
+| `find_jobs` | The search. `terms`, `scan_depth`, `max_results`, `min_fit`, `max_age_days`, `sources` |
 
 `describe_profile` exists because a misconfigured profile does not error, it answers confidently for
 the wrong person. An agent should state whose profile it used before you act on the results.

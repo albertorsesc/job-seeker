@@ -9,6 +9,7 @@ import pytest
 from pydantic import BaseModel, ValidationError
 
 from job_seeker.domain.models import (
+    DEFAULT_SCAN_DEPTH,
     ELIGIBLE_STATUSES,
     CurrencySource,
     Eligibility,
@@ -503,3 +504,17 @@ class TestTheAgeWindowIsBounded:
 
     def test_ten_years_is_still_allowed(self) -> None:
         assert SearchQuery(max_age_days=3650).max_age_days == 3650
+
+
+class TestTheScanDepthIsDeclaredOnce:
+    """The CLI and the MCP tool both have to state this number, and two copies that must agree
+    will drift. Both read the domain's."""
+
+    def test_the_default_is_the_declared_one(self) -> None:
+        assert SearchQuery().scan_depth_per_source == DEFAULT_SCAN_DEPTH
+
+    def test_the_ceiling_is_the_default(self) -> None:
+        """Reading shallowly costs the answer, so the shipped depth is as deep as the engine
+        goes rather than a cautious fraction of it."""
+        with pytest.raises(ValidationError):
+            SearchQuery(scan_depth_per_source=DEFAULT_SCAN_DEPTH + 1)
