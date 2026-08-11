@@ -402,6 +402,7 @@ class TestDerivedValuesAreInThePublishedContract:
         (SourceCoverage, "failed"),
         (SalaryRange, "annual_minimum"),
         (SalaryRange, "annual_maximum"),
+        (EligibilityHints, "canonical_locations"),
     )
 
     @pytest.mark.parametrize(
@@ -457,3 +458,48 @@ class TestDerivedValuesAreInThePublishedContract:
         assert salary.annual_minimum == 120_000
         assert SourceCoverage(source="a").failed is False
         assert SourceCoverage(source="a", error="down").failed is True
+
+
+class TestRestrictionsCarryAComparableForm:
+    """The same argument as `SalaryRange.annual_minimum`: a value nobody can compare is not much
+    of a fact. Four boards name one country four ways."""
+
+    def test_the_board_spellings_reduce_to_one_name_per_place(self) -> None:
+        hints = EligibilityHints(
+            location_restrictions=("United States of America", "USA", "M\u00e9xico")
+        )
+        assert hints.canonical_locations == ("united states", "mexico")
+
+    def test_the_board_keeps_its_own_words(self) -> None:
+        """The canonical form decides; the board's words are what a reason string shows."""
+        hints = EligibilityHints(location_restrictions=("United States of America",))
+        assert hints.location_restrictions == ("United States of America",)
+
+    def test_said_nothing_stays_said_nothing(self) -> None:
+        assert EligibilityHints().canonical_locations is None
+
+    def test_said_no_restriction_stays_no_restriction(self) -> None:
+        """The distinction the whole model exists to keep, carried through the derivation."""
+        assert EligibilityHints(location_restrictions=()).canonical_locations == ()
+
+    def test_a_caller_cannot_supply_its_own(self) -> None:
+        hints = EligibilityHints(location_restrictions=("Brazil",), canonical_locations=("narnia",))
+        assert hints.canonical_locations == ("brazil",)
+
+    def test_it_survives_a_json_round_trip(self) -> None:
+        hints = EligibilityHints(location_restrictions=("USA",))
+        assert EligibilityHints.model_validate_json(hints.model_dump_json()) == hints
+
+
+class TestTheAgeWindowIsBounded:
+    def test_a_number_too_large_for_a_date_is_refused_at_the_boundary(self) -> None:
+        """`age_cutoff` subtracts this many days from now, and a huge value raises OverflowError
+        out of `fetch` rather than returning a date. An MCP agent picks this number."""
+        with pytest.raises(ValidationError):
+            SearchQuery(max_age_days=999_999_999)
+
+    def test_no_window_at_all_is_spelled_none_not_a_huge_number(self) -> None:
+        assert SearchQuery(max_age_days=None).max_age_days is None
+
+    def test_ten_years_is_still_allowed(self) -> None:
+        assert SearchQuery(max_age_days=3650).max_age_days == 3650

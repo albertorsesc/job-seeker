@@ -10,6 +10,8 @@ from __future__ import annotations
 
 from collections.abc import Callable
 
+import pytest
+
 from job_seeker.domain.models import EligibilityHints, EligibilityStatus, Job
 from job_seeker.domain.profile import EligibilityRules, LocationProfile, Profile
 from job_seeker.domain.services.eligibility import EligibilityClassifier
@@ -75,6 +77,54 @@ class TestStructuredLocation:
         """The same canonicalization, in the direction that costs a seeker money if it slips."""
         job = make_job(hints=EligibilityHints(location_restrictions=("United States of America",)))
         assert _classify(job) == S.EXCLUDED_LOCATION
+
+
+class TestOneVocabularyOnBothPaths:
+    """The structured path narrows every place to one name; prose cannot be rewritten, so the text
+    path widens to every name instead. When only the first half was done, a profile stopped
+    matching its own postings."""
+
+    @staticmethod
+    def _seeker(country: str, *, accepts: list[str], locks: list[str] | None = None) -> Profile:
+        return Profile(
+            location=LocationProfile(country=country, timezone_utc_offset=-5.0),
+            eligibility=EligibilityRules(eligible_regions=accepts, location_lock_terms=locks or []),
+        )
+
+    SPELLINGS = ["USA", "United States", "United States of America"]
+
+    @pytest.mark.parametrize("in_profile", SPELLINGS)
+    @pytest.mark.parametrize("in_posting", SPELLINGS)
+    def test_home_is_home_whichever_side_spells_it_which_way(
+        self, in_profile: str, in_posting: str, make_job: Callable[..., Job]
+    ) -> None:
+        """Nine combinations, because the profile and the posting are written by different people
+        and neither consults the other. The structured path narrows both to one name; the text
+        path cannot rewrite prose, so it searches for all of them."""
+        seeker = self._seeker(in_profile, accepts=[in_profile])
+        classifier = EligibilityClassifier(seeker)
+        stated = make_job(hints=EligibilityHints(location_restrictions=(in_posting,)))
+        prose = make_job(description=f"This role is based in the {in_posting}.")
+        assert classifier.classify(stated).status == S.HOME_BASED
+        assert classifier.classify(prose).status == S.HOME_BASED
+
+    def test_a_profile_region_matches_prose_written_in_its_own_words(
+        self, make_job: Callable[..., Job]
+    ) -> None:
+        """`usa` in the profile, "the USA" in the posting. Canonicalizing the search vocabulary
+        without widening it again meant this stopped matching."""
+        seeker = self._seeker("Testland", accepts=["usa"])
+        job = make_job(description="We hire across the USA.")
+        assert EligibilityClassifier(seeker).classify(job).status == S.REGIONAL
+
+    def test_a_location_lock_does_not_exclude_a_seeker_the_posting_names(
+        self, make_job: Callable[..., Job]
+    ) -> None:
+        """The expensive version of the same slip: with the region no longer matching its own
+        prose, the lock term fired unopposed and hard-excluded a job the seeker can hold."""
+        seeker = self._seeker("Testland", accepts=["usa"], locks=["us only"])
+        job = make_job(description="US only. USA-based applicants please.")
+        assert EligibilityClassifier(seeker).classify(job).status != S.EXCLUDED_LOCATION
 
 
 class TestStructuredTimezone:

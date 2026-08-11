@@ -30,6 +30,10 @@ _RATE_LIMIT_BACKOFF = 2.0  # seconds, when a 429 gives no Retry-After
 # ThreadPoolExecutor worker: an uncapped value ("999999999", "inf") would either hang a slot for
 # years or, with inf, make time.sleep raise OverflowError straight out of fetch, breaking the
 # never-raise contract. A board that truly wants a longer pause gets retried on the next run.
+#
+# It bounds one wait, not the run: `max_retries` defaults to 2, so a board that keeps answering 429
+# with a long Retry-After holds its worker for two minutes. Nothing in production shortens that,
+# since `fetch` injects no `sleep`.
 _MAX_BACKOFF = 60.0
 
 
@@ -206,7 +210,11 @@ def to_utc_from_email_date(value: str) -> datetime | None:
         return None
     try:
         when = parsedate_to_datetime(value)
-    except (TypeError, ValueError):
+    except (TypeError, ValueError, OverflowError):
+        # OverflowError is the one that is easy to miss: it is not a ValueError, and it is what an
+        # 11-digit year or zone offset raises when the parsed int will not fit the C int the
+        # datetime constructor wants. Uncaught, one malformed record costs the whole board, and on
+        # the Retry-After path it escapes `_get` past every `except httpx.HTTPError` above it.
         return None
     return when if when.tzinfo is not None else when.replace(tzinfo=UTC)
 

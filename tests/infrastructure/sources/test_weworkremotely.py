@@ -20,6 +20,7 @@ from job_seeker.domain.models import SearchQuery, SourceResult
 from job_seeker.infrastructure.sources.weworkremotely import WeWorkRemotelySource, _countries
 
 FEED = "https://weworkremotely.com/remote-jobs.rss"
+US_FLAG = "\U0001f1fa\U0001f1f8"
 
 
 def _rfc2822(when: datetime) -> str:
@@ -132,6 +133,16 @@ class TestCountriesAreTheRestriction:
         assert _fetch(_item(country="🇺🇸 United States of America")).jobs[
             0
         ].hints.location_restrictions == ("United States of America",)
+
+    def test_a_country_field_it_cannot_read_excludes_rather_than_going_quiet(self) -> None:
+        """A flag with no name behind it. Reporting nothing would mean "the board said nothing",
+        the text path would then read the "Anywhere in the World" region, and a restricted posting
+        would be promoted to global. The board's own text excludes instead."""
+        job = _fetch(_item(country=US_FLAG)).jobs[0]
+        assert job.hints.location_restrictions == (US_FLAG,)
+
+    def test_an_empty_country_field_still_means_the_board_said_nothing(self) -> None:
+        assert _fetch(_item(country="")).jobs[0].hints.location_restrictions is None
 
 
 class TestRegionIsNotARestriction:

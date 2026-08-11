@@ -125,7 +125,15 @@ def _countries(raw: str) -> tuple[str, ...]:
     first would be answering that question with a board's vocabulary instead of a profile's.
     """
     parts = (_LIST_TAIL.sub("", part).strip() for part in _FLAG.split(raw))
-    return tuple(part for part in parts if part)
+    named = tuple(part for part in parts if part)
+    if named or not raw.strip():
+        return named
+    # The board wrote something this could not read: flags with no names, a truncated field, a
+    # name that failed to serialize. Reporting () would become `None` at the call site and mean
+    # "the board said nothing", and the text path would then read the "Anywhere in the World"
+    # region and promote a restricted posting to global. The board's own text excludes instead,
+    # which is the safe direction and shows the seeker exactly what it said.
+    return (raw.strip(),)
 
 
 def _has_expired(item: Tag, now: datetime) -> bool:

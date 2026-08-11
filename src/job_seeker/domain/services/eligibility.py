@@ -23,7 +23,11 @@ from collections.abc import Iterable
 
 from job_seeker.domain.models import Eligibility, EligibilityStatus, Job
 from job_seeker.domain.profile import Profile
-from job_seeker.domain.regions import canonical_place, expand_place
+from job_seeker.domain.regions import (
+    canonical_place,
+    expand_place,
+    spellings_of,
+)
 
 # Phrases in posting text that mean "hireable anywhere". Multi-word on purpose: a bare "global"
 # or "globally" is marketing filler ("global SaaS company", "globally distributed") and would
@@ -50,17 +54,26 @@ class EligibilityClassifier:
     def __init__(self, profile: Profile) -> None:
         self._profile = profile
         self._rules = profile.eligibility
-        self._home = profile.location.country.strip().lower()
+        self._home_place = canonical_place(profile.location.country)
         # The placeholder default is not a real country, so it must not match anything.
-        self._home_is_real = bool(self._home) and self._home != "worldwide"
-        self._home_place = canonical_place(_normalize_place(self._home))
+        self._home_is_real = bool(self._home_place) and self._home_place != "worldwide"
         # Every place the profile accepts: each eligible region plus, if it is a known region, its
         # member countries. So "latam" accepts a "Brazil" restriction, and the text path recognizes
         # a member country mentioned in prose.
         self._accepted_places = {
-            place
-            for region in self._rules.eligible_regions
-            for place in expand_place(_normalize_place(region))
+            place for region in self._rules.eligible_regions for place in expand_place(region)
+        }
+        # The same places under every name they go by, for the text path.
+        #
+        # Prose cannot be canonicalized: a posting writes "the USA" and there is nothing to
+        # rewrite it into before searching. So the structured path narrows to one name per place
+        # and the text path widens to all of them. Searching prose for canonical names alone was
+        # worse than not canonicalizing at all: a profile saying `usa` stopped matching its own
+        # postings, and a "US only" lock then fired unopposed and hard-excluded a job the seeker
+        # could hold.
+        self._home_spellings = spellings_of(self._home_place)
+        self._accepted_spellings = {
+            spelling for place in self._accepted_places for spelling in spellings_of(place)
         }
 
     def classify(self, job: Job) -> Eligibility:
@@ -109,7 +122,7 @@ class EligibilityClassifier:
             return Eligibility(
                 status=EligibilityStatus.GLOBAL, reason="open to applicants anywhere"
             )
-        stated = [canonical_place(_normalize_place(r)) for r in restrictions]
+        stated = job.hints.canonical_locations or ()
         if any(place in _OPEN_PLACES for place in stated):
             return Eligibility(status=EligibilityStatus.GLOBAL, reason="open worldwide")
         if self._home_is_real and self._home_place in stated:
@@ -142,7 +155,7 @@ class EligibilityClassifier:
             )
         # A member country of an eligible region counts as a region mention (e.g. "Argentina"
         # mentioned for a "latam" profile), which the expanded accepted-places set carries.
-        region_mentioned = _any_mention_place(self._accepted_places, text)
+        region_mentioned = _any_mention_place(self._accepted_spellings, text)
         if _any_mention(self._rules.location_lock_terms, text) and not region_mentioned:
             return Eligibility(
                 status=EligibilityStatus.EXCLUDED_LOCATION,
@@ -152,7 +165,7 @@ class EligibilityClassifier:
             return Eligibility(
                 status=EligibilityStatus.GLOBAL, reason="states it hires from anywhere"
             )
-        if self._home_is_real and _mentions_place(self._home, text):
+        if self._home_is_real and _any_mention_place(self._home_spellings, text):
             return Eligibility(status=EligibilityStatus.HOME_BASED, reason="mentions your country")
         if region_mentioned:
             return Eligibility(status=EligibilityStatus.REGIONAL, reason="mentions your region")
@@ -160,14 +173,6 @@ class EligibilityClassifier:
             status=EligibilityStatus.REMOTE_UNVERIFIED,
             reason="remote, but eligibility could not be confirmed",
         )
-
-
-_PLACE_PUNCT = re.compile(r"[^\w\s]")
-
-
-def _normalize_place(text: str) -> str:
-    """A place or region string, normalized for exact comparison: lower, unpunctuated, single-spaced."""
-    return " ".join(_PLACE_PUNCT.sub(" ", text.casefold()).split())
 
 
 def _mentions(term: str, text: str) -> bool:

@@ -554,3 +554,34 @@ class TestToUtcFromEmailDate:
     def test_an_unreadable_value_is_none_rather_than_an_exception(self, value: str) -> None:
         """One malformed record must not cost the page of good ones around it."""
         assert base.to_utc_from_email_date(value) is None
+
+    @pytest.mark.parametrize(
+        "value",
+        [
+            "Tue, 11 Aug 99999999999 16:03:20 +0000",
+            "Tue, 11 Aug 2026 16:03:20 +99999999999999999999",
+        ],
+        ids=["11-digit year", "oversized zone offset"],
+    )
+    def test_a_number_too_large_for_a_date_is_none_rather_than_an_overflow(
+        self, value: str
+    ) -> None:
+        """The failure mode that is easy to miss: an int too large for the C int the datetime
+        constructor wants raises OverflowError, which is not a ValueError. Uncaught it escapes
+        `fetch` on the feed path, and `_get` on the Retry-After path, past every httpx catch."""
+        assert base.to_utc_from_email_date(value) is None
+
+    def test_an_overflowing_retry_after_date_falls_back_instead_of_escaping(self) -> None:
+        slept: list[float] = []
+        with respx.mock:
+            respx.get("https://example.com/api").mock(
+                side_effect=[
+                    httpx.Response(
+                        429, headers={"retry-after": "Tue, 11 Aug 99999999999 16:03:20 GMT"}
+                    ),
+                    httpx.Response(200, json={"ok": True}),
+                ]
+            )
+            with base.build_client() as client:
+                base.get_json(client, "https://example.com/api", sleep=slept.append, max_retries=3)
+        assert slept == [base._RATE_LIMIT_BACKOFF]
