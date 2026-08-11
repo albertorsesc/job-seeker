@@ -94,6 +94,10 @@ job-seeker find --max-results 10 --format html --out report.html
 | `--stated-only` | only postings a board affirmatively cleared, dropping `remote-verify` |
 | `--sort` | `fit` (default) or `confidence`, which puts everything a board cleared above everything nobody did |
 | `--min-fit` | drop postings below this fit, 0.0 to 1.0 (default 0.0, keep everything) |
+| `--new-only` | only postings the engine has not shown you before |
+| `--include-dismissed` | show postings you dismissed; hidden by default |
+| `--no-memory` | read and write nothing this run |
+| `--state` | the posting journal to use (env: `JOB_SEEKER_STATE`) |
 | `--sources` | restrict to named boards. A typo is refused rather than silently searching fewer |
 | `--format` | `html` (default), `json`, or `csv` |
 | `--out` | write to a file instead of stdout |
@@ -114,6 +118,36 @@ postings rather than the best ones. On one profile, a depth of 50 read 180 posti
 second and the largest board contributed nothing at all; 1000 read 1,220 in about thirteen seconds,
 moved the best eligible match from 34% to 52% fit, and put three roles from that board in the top
 five. Thirteen seconds is the cheap resource; the pool is the scarce one.
+
+### Running it week after week
+
+The engine remembers which postings it has shown you, so the second run is more useful than the
+first. A posting is **new** when this run is the first time the engine has put it in front of you,
+which needs no clock and no configuration: it does not mean the board posted it recently.
+
+```bash
+job-seeker find --new-only                       # just the delta since last time
+job-seeker mark dismissed jk_9f2c1a3b04d7e551    # never show me this again
+job-seeker mark applied jk_3c3554201a58a531 --note "referred by K"
+job-seeker unmark jk_9f2c1a3b04d7e551            # changed my mind
+```
+
+A reference is the handle printed with each posting, the raw identity key, or the posting's URL,
+so you can paste whichever you already have. Marking is all or nothing: if one reference does not
+match, nothing is written and the unmatched ones are listed, because a dismissal landing on the
+wrong posting is worse than a typo being reported.
+
+The journal is a plain JSONL file at `$XDG_STATE_HOME/job-seeker/postings.jsonl`, or
+`~/.local/state/job-seeker/postings.jsonl`. Never inside this repo: it records which companies you
+applied to and when. Back it up with `cp`, edit it in any text editor, and delete it to start over,
+which loses your dismissals and nothing else.
+
+Two behaviours worth knowing before they surprise you. The journal holds what the engine
+**delivered**, not what it crawled, so raising `--max-results` from 5 to 50 announces 45 postings as
+new, correctly, because you have not been shown them. And if the journal cannot be read, the search
+still runs: `--new-only` is ignored rather than honoured, your dismissals are not applied, and it
+says so on stderr, because an empty list that reads as "nothing new this week" is the one lie that
+costs you a job without your ever knowing it was told.
 
 ### "US job, but open to remote"
 

@@ -9,15 +9,19 @@ happen for search. One function, one behaviour.
 from __future__ import annotations
 
 from job_seeker.application.orchestrator import JobSeeker
-from job_seeker.application.ports import JobSource
+from job_seeker.application.ports import JobSource, PostingMemory
 from job_seeker.domain.models import SearchQuery, SearchResult
 from job_seeker.domain.profile import Profile
+from job_seeker.infrastructure.memory import JsonlPostingMemory
 from job_seeker.infrastructure.sources import registry
 from job_seeker.infrastructure.sources.broken import BrokenSource
 
 
 def execute_search(
-    profile: Profile, query: SearchQuery, source_names: list[str] | None
+    profile: Profile,
+    query: SearchQuery,
+    source_names: list[str] | None,
+    memory: PostingMemory | None = None,
 ) -> SearchResult:
     """Select the registered sources (or the named subset) and run the search.
 
@@ -31,9 +35,13 @@ def execute_search(
     library function mutate process-global state on every search, and put a write to the registry
     on whatever thread the caller happened to be on. An embedder who reaches this with an empty
     registry gets the explicit error below, which is a better answer than a silent side effect.
+
+    `memory=None` means the journal at its configured path. `ForgetfulMemory` is what a caller
+    passes to run without one, and it is a value rather than an absence so that "off by choice" and
+    "could not be read" stay tellable apart all the way to the report.
     """
     sources = _select_sources(source_names)
-    return JobSeeker.default(sources, profile).run(query)
+    return JobSeeker.default(sources, profile, memory or JsonlPostingMemory.from_env()).run(query)
 
 
 def _select_sources(source_names: list[str] | None) -> list[JobSource]:

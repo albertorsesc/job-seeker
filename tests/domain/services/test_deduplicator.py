@@ -12,8 +12,14 @@ from __future__ import annotations
 from collections.abc import Callable
 from datetime import UTC, datetime
 
+import pytest
+
 from job_seeker.domain.models import CurrencySource, EligibilityHints, Job, SalaryRange
-from job_seeker.domain.services.deduplicator import Deduplicator
+from job_seeker.domain.services.deduplicator import (
+    IDENTITY_VERSION,
+    Deduplicator,
+    posting_identity,
+)
 
 
 def _dedupe(jobs: list[Job]) -> list[Job]:
@@ -283,3 +289,43 @@ class TestIdentity:
         a = make_job(company="", title="AI Engineer", url="https://a/1")
         b = make_job(company="", title="Data Engineer", url="https://b/2")
         assert Deduplicator().identity(a) != Deduplicator().identity(b)
+
+
+class TestTheIdentityKeyIsPinned:
+    """A golden table, because changing this key is not a refactor.
+
+    Every posting a seeker has dismissed is filed under a key computed by today's rules. Change the
+    normalizer and their decisions are orphaned: the postings they banned come back, and nothing
+    fails to tell anyone. This test is what turns that into a deliberate act.
+    """
+
+    @pytest.mark.parametrize(
+        "company,title,expected",
+        [
+            ("Acme", "Senior AI Engineer", "acme|senior ai engineer"),
+            ("Acme, Inc.", "Senior AI Engineer", "acme|senior ai engineer"),
+            ("ACME LLC", "Senior AI Engineer", "acme|senior ai engineer"),
+            ("Blend360", "Lead AI Engineer", "blend360|lead ai engineer"),
+            ("Lemon.io", "Senior AI Engineer", "lemon io|senior ai engineer"),
+            (
+                "Coinbase",
+                "Machine Learning Engineer, CX Intelligence",
+                "coinbase|machine learning engineer cx intelligence",
+            ),
+        ],
+    )
+    def test_these_pairs_key_exactly_this_way(
+        self, company: str, title: str, expected: str
+    ) -> None:
+        job = Job(title=title, company=company, url="https://a.test/1", source="fake")
+        assert posting_identity(job) == expected
+
+    def test_the_identity_version_is_one(self) -> None:
+        """Bumping it orphans every stored decision, so it changes only with a migration."""
+        assert IDENTITY_VERSION == 1
+
+    def test_the_deduplicator_and_the_function_agree(self) -> None:
+        """Two normalizers that must agree will drift, and the drift shows up months later as a
+        dismissal that quietly stopped working."""
+        job = Job(title="Senior AI Engineer", company="Acme, Inc.", url="https://a/1", source="f")
+        assert Deduplicator().identity(job) == posting_identity(job)

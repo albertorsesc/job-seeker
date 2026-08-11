@@ -424,3 +424,145 @@ class TestTopLevel:
         with pytest.raises(SystemExit) as exit_info:
             cli.main(["definitely-not-a-command"])
         assert exit_info.value.code == 2
+
+
+class TestMarking:
+    """The command that closes the loop. It fails loudly where `find` warns and carries on: a mark
+    that reports success without writing is the one lie the seeker cannot detect."""
+
+    @staticmethod
+    def _journal(tmp_path: Path) -> str:
+        return str(tmp_path / "postings.jsonl")
+
+    def _seed(self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> str:
+        """Run a search so the journal holds a posting to mark."""
+        _wire_fake_board(monkeypatch, _a_job())
+        cli.main(
+            [
+                "find",
+                "--profile",
+                str(_write_profile(tmp_path)),
+                "--format",
+                "json",
+                "--state",
+                self._journal(tmp_path),
+            ]
+        )
+        return self._journal(tmp_path)
+
+    def test_a_dismissed_posting_is_gone_from_the_next_run(
+        self, tmp_path: Path, capsys: pytest.CaptureFixture[str], monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        journal = self._seed(tmp_path, monkeypatch)
+        payload = json.loads(capsys.readouterr().out)
+        handle = payload["jobs"][0]["history"]["handle"]
+
+        assert cli.main(["mark", "dismissed", handle, "--state", journal]) == 0
+        capsys.readouterr()
+
+        cli.main(
+            [
+                "find",
+                "--profile",
+                str(_write_profile(tmp_path)),
+                "--format",
+                "json",
+                "--state",
+                journal,
+            ]
+        )
+        after = json.loads(capsys.readouterr().out)
+        assert after["jobs"] == []
+        assert after["memory"]["dismissed_hidden"] == 1
+
+    def test_unmark_puts_it_back(
+        self, tmp_path: Path, capsys: pytest.CaptureFixture[str], monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        journal = self._seed(tmp_path, monkeypatch)
+        handle = json.loads(capsys.readouterr().out)["jobs"][0]["history"]["handle"]
+        cli.main(["mark", "dismissed", handle, "--state", journal])
+        assert cli.main(["unmark", handle, "--state", journal]) == 0
+        capsys.readouterr()
+
+        cli.main(
+            [
+                "find",
+                "--profile",
+                str(_write_profile(tmp_path)),
+                "--format",
+                "json",
+                "--state",
+                journal,
+            ]
+        )
+        assert len(json.loads(capsys.readouterr().out)["jobs"]) == 1
+
+    def test_an_unknown_reference_writes_nothing_and_says_which(
+        self, tmp_path: Path, capsys: pytest.CaptureFixture[str], monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        journal = self._seed(tmp_path, monkeypatch)
+        capsys.readouterr()
+        assert cli.main(["mark", "dismissed", "jk_deadbeefdeadbeef", "--state", journal]) == 2
+        assert "jk_deadbeefdeadbeef" in capsys.readouterr().err
+
+    def test_marking_needs_no_profile(
+        self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch, capsys: pytest.CaptureFixture[str]
+    ) -> None:
+        """A broken profile must not stop the seeker recording that they applied to something."""
+        journal = self._seed(tmp_path, monkeypatch)
+        handle = json.loads(capsys.readouterr().out)["jobs"][0]["history"]["handle"]
+        monkeypatch.delenv("JOB_SEEKER_PROFILE", raising=False)
+        assert cli.main(["mark", "applied", handle, "--state", journal]) == 0
+
+
+class TestMemoryOnTheFindCommand:
+    def test_contradictory_flags_are_refused_before_any_board_is_touched(
+        self, tmp_path: Path, capsys: pytest.CaptureFixture[str], monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        _wire_fake_board(monkeypatch, _a_job())
+        code = cli.main(
+            ["find", "--profile", str(_write_profile(tmp_path)), "--no-memory", "--new-only"]
+        )
+        assert code == 2
+        assert "--new-only" in capsys.readouterr().err
+
+    def test_no_memory_leaves_the_journal_untouched(
+        self, tmp_path: Path, capsys: pytest.CaptureFixture[str], monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        _wire_fake_board(monkeypatch, _a_job())
+        journal = tmp_path / "postings.jsonl"
+        cli.main(
+            [
+                "find",
+                "--profile",
+                str(_write_profile(tmp_path)),
+                "--format",
+                "json",
+                "--state",
+                str(journal),
+                "--no-memory",
+            ]
+        )
+        payload = json.loads(capsys.readouterr().out)
+        assert journal.exists() is False
+        assert payload["memory"]["enabled"] is False
+
+    def test_a_second_run_says_what_is_new_since_the_first(
+        self, tmp_path: Path, capsys: pytest.CaptureFixture[str], monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        _wire_fake_board(monkeypatch, _a_job())
+        journal = str(tmp_path / "postings.jsonl")
+        arguments = [
+            "find",
+            "--profile",
+            str(_write_profile(tmp_path)),
+            "--format",
+            "json",
+            "--state",
+            journal,
+        ]
+        cli.main(arguments)
+        assert capsys.readouterr().err == ""  # a first run has no delta to report
+
+        cli.main(arguments)
+        assert "0 new since" in capsys.readouterr().err

@@ -25,6 +25,12 @@ from __future__ import annotations
 
 from typing import Protocol
 
+from job_seeker.domain.memory import (
+    MemoryWrite,
+    PostingDecision,
+    Recollection,
+    Sighting,
+)
 from job_seeker.domain.models import SearchQuery, SearchResult, SourceResult
 from job_seeker.domain.profile import Profile
 
@@ -92,5 +98,49 @@ class Reporter(Protocol):
 
         Those decisions belong to the domain and already happened. A reporter that repeats
         them shows up as the JSON and the HTML disagreeing about what the run found.
+        """
+        ...
+
+
+class PostingMemory(Protocol):
+    """What the seeker has already been shown, and what they decided about it.
+
+    A port, unlike the domain services, because it crosses the boundary: a file on this machine
+    that outlives the process. The application asks it what is remembered and tells it what was
+    delivered; nothing above this Protocol learns that a file exists.
+
+    **No method may raise.** A search must survive a broken memory exactly as it survives a board
+    being down, and for the same reason: the seeker asked for jobs, and losing the answer because
+    a bookkeeping file was unreadable serves nobody. Failures are reported in the returned value.
+    """
+
+    def recall(self) -> Recollection:
+        """Everything remembered, and how well it could be remembered.
+
+        An unreadable store returns `available=False` with the reason, not an empty recollection.
+        The difference matters: empty means a first run where everything is genuinely new, while
+        unreadable means nothing can be said, and answering the first when the truth is the second
+        stops the seeker's dismissals being honoured without any sign that it happened.
+        """
+        ...
+
+    def record(self, sightings: tuple[Sighting, ...], /) -> MemoryWrite:
+        """Persist that these postings were delivered to the seeker.
+
+        Touches when a posting was seen and how often, never what the seeker decided about it.
+        That is what lets a search running concurrently with a `mark` leave the mark intact.
+        """
+        ...
+
+    def decide(
+        self, refs: tuple[str, ...], decision: PostingDecision | None, note: str, /
+    ) -> MemoryWrite:
+        """Set, or clear with None, the seeker's decision for each reference.
+
+        A reference is a handle, a raw identity key, or a URL the store has seen, so the seeker can
+        paste whichever of the three is already in front of them. All or nothing: if any reference
+        does not resolve, nothing is written and every unresolved one comes back in
+        `MemoryWrite.unknown`. A half-applied batch leaves the seeker unable to tell which half
+        landed, and a dismissal on the wrong posting is worse than a typo being reported.
         """
         ...

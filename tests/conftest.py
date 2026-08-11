@@ -62,3 +62,18 @@ def profile() -> Profile:
         false_positive_terms=["support agent"],
         search_terms=["Backend Engineer"],
     )
+
+
+@pytest.fixture(autouse=True)
+def _isolate_the_posting_journal(
+    tmp_path_factory: pytest.TempPathFactory, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """Point every test at a throwaway journal.
+
+    Autouse and unconditional, because the default path is a real file in the seeker's home
+    directory. Without this, running the suite writes fake postings into whatever the person at
+    this machine has actually been shown, and a test that dismisses something would dismiss it for
+    real. Verified the hard way: the first run of the suite after memory landed created
+    ~/.local/state/job-seeker/postings.jsonl.
+    """
+    monkeypatch.setenv("JOB_SEEKER_STATE", str(tmp_path_factory.mktemp("state") / "postings.jsonl"))

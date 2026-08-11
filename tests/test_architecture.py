@@ -47,6 +47,13 @@ IO_MODULES = (
     "mcp",
     "jobspy",
     "socket",
+    # The filesystem, added when memory landed. The guard had no opinion about it, so a use case
+    # could have opened a file and the suite would have stayed green. Neither inner layer imports
+    # either today, so this tightens without changing anything else.
+    "os",
+    "pathlib",
+    "tempfile",
+    "shutil",
 )
 
 

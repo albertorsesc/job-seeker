@@ -15,10 +15,17 @@ from pathlib import Path
 from pydantic import ValidationError
 
 from job_seeker import __version__
+from job_seeker.application.ports import PostingMemory
+from job_seeker.domain.memory import PostingDecision
 from job_seeker.domain.models import DEFAULT_SCAN_DEPTH, SearchQuery, SearchResult, SortOrder
 from job_seeker.infrastructure.config.profile_loader import MarkdownProfileProvider, ProfileError
 from job_seeker.infrastructure.entrypoints.bounds import describe_bounds_error
 from job_seeker.infrastructure.entrypoints.search import execute_search
+from job_seeker.infrastructure.memory import (
+    ForgetfulMemory,
+    JsonlPostingMemory,
+    default_path,
+)
 from job_seeker.infrastructure.reporting import FORMATS, reporter_for
 from job_seeker.infrastructure.sources import registry
 from job_seeker.infrastructure.sources.defaults import register_builtins
@@ -35,6 +42,9 @@ _FIELD_FLAGS = {
 }
 
 
+_STATE_ENV = "JOB_SEEKER_STATE"
+
+
 def _build_parser() -> argparse.ArgumentParser:
     parser = argparse.ArgumentParser(
         prog="job-seeker",
@@ -44,6 +54,25 @@ def _build_parser() -> argparse.ArgumentParser:
 
     commands = parser.add_subparsers(dest="command", metavar="command")
     commands.add_parser("sources", help="list the job boards and whether each one can run")
+
+    for verb, helptext in (
+        ("mark", "record that you applied to a posting, or that you never want to see it again"),
+        ("unmark", "forget a decision you recorded, putting the posting back in the results"),
+    ):
+        marker = commands.add_parser(verb, help=helptext)
+        if verb == "mark":
+            marker.add_argument(
+                "decision", choices=[d.value for d in PostingDecision], help="what you decided"
+            )
+        marker.add_argument(
+            "refs",
+            nargs="+",
+            metavar="REF",
+            help="a handle (jk_...), a raw identity key, or the posting's URL",
+        )
+        if verb == "mark":
+            marker.add_argument("--note", default="", help="a note to keep with the decision")
+        marker.add_argument("--state", help=f"the posting journal to use (env: ${_STATE_ENV})")
 
     find = commands.add_parser("find", help="search the boards and rank what you can hold")
     find.add_argument("--profile", help="path to your profile file (default: $JOB_SEEKER_PROFILE)")
@@ -55,6 +84,25 @@ def _build_parser() -> argparse.ArgumentParser:
         help=f"how many postings to read per board (default: {DEFAULT_SCAN_DEPTH}). Lowering this "
         "makes a search faster and its answer worse: it shrinks the pool a result is chosen from, "
         "and it does not shorten the output.",
+    )
+    find.add_argument(
+        "--new-only",
+        action="store_true",
+        help="only postings this engine has not shown you before. Ignored, with a warning, when "
+        "the journal cannot be read: an empty list would read as 'nothing new'.",
+    )
+    find.add_argument(
+        "--include-dismissed",
+        action="store_true",
+        help="show postings you dismissed. They are hidden by default.",
+    )
+    find.add_argument(
+        "--no-memory",
+        action="store_true",
+        help="read and write nothing this run: no newness, no dismissals honoured.",
+    )
+    find.add_argument(
+        "--state", help=f"the posting journal to use (default: ${_STATE_ENV} or {default_path()})"
     )
     find.add_argument(
         "--min-fit",
@@ -144,22 +192,34 @@ def _find(args: argparse.Namespace) -> int:
             max_results=args.max_results,
             max_age_days=args.max_age_days,
             stated_only=args.stated_only,
+            new_only=args.new_only,
+            include_dismissed=args.include_dismissed,
             sort=SortOrder(args.sort),
         )
     except ValidationError as exc:
         print(describe_bounds_error(exc, _FIELD_FLAGS), file=sys.stderr)
         return 2
 
+    if args.no_memory and args.new_only:
+        # The request contradicts itself, so it is refused before a single board is touched, the
+        # same way an unknown --sources name is. This is a different case from memory failing at
+        # runtime, where the search proceeds and --new-only is ignored.
+        print(
+            "--new-only needs the journal, which --no-memory turns off. Drop one of them.",
+            file=sys.stderr,
+        )
+        return 2
+
     source_names = _split(args.sources) or None  # None = every registered source
     try:
-        result = execute_search(profile, query, source_names)
+        result = execute_search(profile, query, source_names, _memory(args))
     except ValueError as exc:  # unknown source name, or none registered
         print(str(exc), file=sys.stderr)
         return 2
 
-    notice = _run_notice(result)
-    if notice:
-        print(notice, file=sys.stderr)
+    for notice in (_memory_notice(result), _run_notice(result)):
+        if notice:
+            print(notice, file=sys.stderr)
 
     report = reporter_for(args.format).render(result)
     if args.out:
@@ -203,6 +263,85 @@ def _run_notice(result: SearchResult) -> str:
     return ""
 
 
+def _memory_notice(result: SearchResult) -> str:
+    """What memory did to this answer, on stderr. "" when it did nothing worth saying.
+
+    A broken journal names its consequence rather than its exception. "Memory error" tells the
+    seeker nothing they can act on; "postings you dismissed are NOT hidden" tells them why the list
+    in front of them looks wrong, which is the thing they will actually notice.
+    """
+    memory = result.memory
+    if not memory.enabled:
+        return ""
+    if not memory.available:
+        return (
+            f"WARNING: the posting journal could not be read ({memory.error or 'unknown reason'}). "
+            "Nothing is marked new, and postings you dismissed are NOT hidden."
+        )
+
+    parts = []
+    # Nothing on a first run. Every posting is new when there is no previous run to be new since,
+    # so the line would carry no information, and the suite already holds the older notices to the
+    # same rule: a message printed every time is a message the reader learns to skip, and then
+    # skips on the day it matters.
+    if memory.previous_run_at is not None:
+        since = memory.previous_run_at.astimezone().strftime("%d %b %H:%M")
+        parts.append(f"{memory.new} new since {since}.")
+    if memory.dismissed_hidden:
+        parts.append(f"{memory.dismissed_hidden} dismissed hidden.")
+    if memory.not_new_hidden:
+        parts.append(f"{memory.not_new_hidden} already seen hidden.")
+    if memory.write_error:
+        parts.append(f"This run was NOT recorded ({memory.write_error}).")
+    return " ".join(parts)
+
+
+def _mark(args: argparse.Namespace) -> int:
+    """Record or clear a decision. Loud on failure, unlike a search.
+
+    The asymmetry is deliberate. A search that could not read its journal still answers the
+    question the seeker asked, so it warns and carries on. A mark that reports success without
+    writing is the one lie the seeker cannot detect, and it teaches them the tool is broken.
+    """
+    decision = PostingDecision(args.decision) if args.command == "mark" else None
+    note = getattr(args, "note", "")
+    written = _memory(args).decide(tuple(args.refs), decision, note)
+
+    if written.unknown:
+        # Nothing was written, so every ref is listed rather than the run half-applied. No
+        # near-miss matching: a dismissal landing on the wrong posting is worse than a typo.
+        print(
+            "Not written. These do not match anything in the journal:\n  "
+            + "\n  ".join(written.unknown),
+            file=sys.stderr,
+        )
+        return 2
+    if written.error:
+        print(f"Could not write the journal: {written.error}", file=sys.stderr)
+        return 2
+    if not written.written:
+        print("Nothing to do.", file=sys.stderr)
+        return 2
+
+    verdict = decision.value if decision else "undecided"
+    for record in written.decided:
+        print(f"{verdict}: {record.company} - {record.title}")
+    return 0
+
+
+def _memory(args: argparse.Namespace) -> PostingMemory:
+    """The journal this invocation should use, or a memory that remembers nothing.
+
+    A value either way rather than an optional, so nothing downstream has to ask whether memory
+    exists: "the seeker turned it off" and "it could not be read" are different facts, and both are
+    reportable only if something is there to report them.
+    """
+    if getattr(args, "no_memory", False):
+        return ForgetfulMemory()
+    named = getattr(args, "state", None)
+    return JsonlPostingMemory(named) if named else JsonlPostingMemory.from_env()
+
+
 def _resolve_terms(flag: str | None, from_profile: list[str]) -> list[str]:
     return _split(flag) or from_profile
 
@@ -221,6 +360,8 @@ def main(argv: Sequence[str] | None = None) -> int:
         return _sources()
     if args.command == "find":
         return _find(args)
+    if args.command in {"mark", "unmark"}:
+        return _mark(args)
 
     # stderr, not stdout: this path returns a failure code, and `job-seeker | jq` getting a page
     # of help text on stdout is the same lie `_find` goes out of its way to avoid.
