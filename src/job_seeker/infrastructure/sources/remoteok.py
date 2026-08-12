@@ -28,6 +28,7 @@ from job_seeker.domain.models import (
     SourceResult,
 )
 from job_seeker.infrastructure.sources import base
+from job_seeker.infrastructure.sources.scanning import collect
 
 _API_URL = "https://remoteok.com/api"
 
@@ -52,7 +53,6 @@ class RemoteOkSource:
 
     def fetch(self, query: SearchQuery, /) -> SourceResult:
         """Fetch the feed, normalize, and report. Never raises: a failure is a SourceResult.error."""
-        cutoff = base.age_cutoff(query.max_age_days)
         try:
             with base.build_client() as client:
                 payload = base.get_json(client, _API_URL)
@@ -60,24 +60,14 @@ class RemoteOkSource:
             return SourceResult(source=self.name, error=f"{type(exc).__name__}: {exc}")
 
         records = payload if isinstance(payload, list) else []
-        jobs: list[Job] = []
-        scanned = 0
-        truncated = False
-        for index, record in enumerate(records):
-            if not _is_job_record(record):
-                continue  # the legal boilerplate, or a non-dict: not a posting to examine
-            scanned += 1  # examined, the same meaning as Himalayas' scanned
-            job = _normalize(record)
-            if job is None or base.is_stale(job.posted_at, cutoff):
-                continue
-            jobs.append(job)
-            if len(jobs) >= query.scan_depth_per_source:
-                # Truncated only if a real posting still remains past the break. Deriving it from
-                # position, not from a recount, is what keeps scanned and truncated in agreement.
-                truncated = any(_is_job_record(r) for r in records[index + 1 :])
-                break
-
-        return SourceResult(source=self.name, jobs=jobs, scanned=scanned, truncated=truncated)
+        # The boilerplate row and any non-dict are filtered out before the loop rather than inside
+        # it, so `scanned` counts postings examined and not rows walked past, and so "a record
+        # still remains" means a real posting remains.
+        postings = [record for record in records if _is_job_record(record)]
+        scan = collect(postings, _normalize, query)
+        return SourceResult(
+            source=self.name, jobs=scan.jobs, scanned=scan.scanned, truncated=scan.bounded
+        )
 
 
 def _is_job_record(record: Any) -> bool:

@@ -38,6 +38,7 @@ from job_seeker.domain.models import (
 )
 from job_seeker.domain.timezones import offsets_for_band
 from job_seeker.infrastructure.sources import base
+from job_seeker.infrastructure.sources.scanning import collect
 
 _API_URL = "https://remotive.com/api/remote-jobs"
 
@@ -70,7 +71,6 @@ class RemotiveSource:
 
     def fetch(self, query: SearchQuery, /) -> SourceResult:
         """Fetch the window, normalize, and report. Never raises: a failure is a SourceResult.error."""
-        cutoff = base.age_cutoff(query.max_age_days)
         try:
             with base.build_client() as client:
                 payload = base.get_json(client, _API_URL)
@@ -79,24 +79,13 @@ class RemotiveSource:
 
         records = payload.get("jobs") if isinstance(payload, dict) else payload
         records = records if isinstance(records, list) else []
-        jobs: list[Job] = []
-        scanned = 0
-        for record in records:
-            if not isinstance(record, dict):
-                continue
-            scanned += 1
-            job = _normalize(record)
-            if job is None or base.is_stale(job.posted_at, cutoff):
-                continue
-            jobs.append(job)
-            if len(jobs) >= query.scan_depth_per_source:
-                break
+        scan = collect([r for r in records if isinstance(r, dict)], _normalize, query)
 
         # Always truncated, and not because we stopped early. The API hands back a 20-posting
         # window of a corpus in the thousands and calls it the total, so a run that read all of it
         # still saw a sliver. Reporting a complete scan here would be the precise lie
         # `SourceCoverage` exists to prevent.
-        return SourceResult(source=self.name, jobs=jobs, scanned=scanned, truncated=True)
+        return SourceResult(source=self.name, jobs=scan.jobs, scanned=scan.scanned, truncated=True)
 
 
 def _normalize(record: dict[str, Any]) -> Job | None:
