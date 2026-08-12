@@ -10,7 +10,7 @@ from __future__ import annotations
 import csv
 import io
 
-from job_seeker.domain.models import SalaryRange, ScoredJob, SearchResult
+from job_seeker.domain.models import PostingHistory, SalaryRange, ScoredJob, SearchResult
 
 _COLUMNS = (
     "rank",
@@ -40,10 +40,19 @@ _COLUMNS = (
     "annual_max",
     "salary_note",
     "url",
+    # Memory, appended rather than slotted in beside the other verdicts, so a spreadsheet or script
+    # someone already built against this file keeps working: every existing column stays where it
+    # was. `handle` is what a `job-seeker mark` command takes, which is why it travels with the row
+    # rather than being something to look up.
+    "handle",
+    "new",
+    "times_seen",
+    "decision",
 )
 # A cell beginning with one of these is executed as a formula by Excel/Sheets. Board data is
 # untrusted, so a title like "=cmd|..." must be neutralized before it reaches a spreadsheet.
 _FORMULA_TRIGGERS = ("=", "+", "-", "@", "\t", "\r")
+_HISTORY_COLUMNS = ("handle", "new", "times_seen", "decision")
 # Keyed once so the empty row and the populated row cannot drift apart: DictWriter
 # silently substitutes "" for a key one branch forgot.
 _SALARY_COLUMNS = (
@@ -84,6 +93,7 @@ def _row(rank: int, scored: ScoredJob) -> dict[str, object]:
         "source": _safe(job.source),
         **_salary_cells(job.salary),
         "url": _safe(job.url),
+        **_history_cells(scored.history),
     }
 
 
@@ -116,3 +126,20 @@ def _safe(cell: str) -> str:
     """Neutralize a spreadsheet-formula cell by prefixing an apostrophe, which a spreadsheet reads
     as "this is text". Leaves ordinary values untouched."""
     return f"'{cell}" if cell.startswith(_FORMULA_TRIGGERS) else cell
+
+
+def _history_cells(history: PostingHistory | None) -> dict[str, object]:
+    """What memory knew, or empty cells when it could not answer.
+
+    Empty rather than `new=False`: a column claiming a posting is not new, on a run where nothing
+    could be determined, is a spreadsheet full of confident wrong answers. Blank is the honest cell
+    and sorts to one end where a reader will notice it.
+    """
+    if history is None:
+        return dict.fromkeys(_HISTORY_COLUMNS, "")
+    return {
+        "handle": history.handle,
+        "new": history.is_new,
+        "times_seen": history.times_seen,
+        "decision": history.decision.value if history.decision else "",
+    }

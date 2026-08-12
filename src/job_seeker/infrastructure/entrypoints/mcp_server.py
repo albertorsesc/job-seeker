@@ -19,6 +19,7 @@ from typing import TYPE_CHECKING, Any
 from pydantic import ValidationError
 
 from job_seeker import __version__
+from job_seeker.domain.memory import MemoryWrite, PostingDecision
 from job_seeker.domain.models import DEFAULT_SCAN_DEPTH, SearchQuery, SearchResult, SortOrder
 from job_seeker.infrastructure.config.profile_loader import (
     MarkdownProfileProvider,
@@ -26,6 +27,7 @@ from job_seeker.infrastructure.config.profile_loader import (
 )
 from job_seeker.infrastructure.entrypoints.bounds import describe_bounds_error
 from job_seeker.infrastructure.entrypoints.search import execute_search
+from job_seeker.infrastructure.memory import JsonlPostingMemory
 from job_seeker.infrastructure.sources import registry
 from job_seeker.infrastructure.sources.defaults import register_builtins
 
@@ -34,6 +36,8 @@ from job_seeker.infrastructure.sources.defaults import register_builtins
 _FIELD_PARAMS = {
     "scan_depth_per_source": "scan_depth",
     "min_fit": "min_fit",
+    "new_only": "new_only",
+    "include_dismissed": "include_dismissed",
     "max_results": "max_results",
     "max_age_days": "max_age_days",
     "terms": "terms",
@@ -73,6 +77,15 @@ Say when the answer is partial. `all_sources_ran=false` means a board failed and
 of job are missing. `fully_scanned=false` is ordinary and means the scan hit `scan_depth`.
 
 Results are a snapshot of a live, constantly-changing feed, not a reproducible query.
+
+`history.is_new` means this run is the first time the engine has shown the seeker that posting, not
+that the board posted it recently. `history` is absent when the journal could not be read, so say
+memory was unreadable rather than guessing. Read `memory.healthy`: when it is false nothing is
+marked new and postings the seeker dismissed are NOT hidden.
+
+Call `mark_jobs` only when the seeker says they applied or wants a posting gone. Never infer it
+from them opening a link or from your own read of the fit: it is their record of what they did, and
+a wrong entry is invisible to them.
 """
 
 _MISSING_SDK = (
@@ -129,6 +142,44 @@ def build_server() -> MCPServer:
         }
 
     @server.tool()
+    def mark_jobs(refs: list[str], decision: PostingDecision, note: str = "") -> MemoryWrite:
+        """Record that the seeker applied to these postings, or wants them gone for good.
+
+        A `ref` is the `history.handle` from a search result, a raw `history.key`, or the posting's
+        URL. Pass several to decide several at once.
+
+        **Only call this when the seeker has told you they applied, or told you to drop something.**
+        Never infer it from them opening a link, asking a question about a posting, or from your own
+        judgement of how well it fits. This is their own record of what they did, and a wrong entry
+        is invisible to them: a posting dismissed by mistake simply stops appearing, with nothing to
+        notice. `unmark_jobs` reverses it.
+
+        All or nothing. If any ref does not resolve, nothing is written and this raises naming the
+        ones that did not, so you can never report "dismissed" for a ref you invented.
+        """
+        return _decide(refs, decision, note)
+
+    @server.tool()
+    def unmark_jobs(refs: list[str]) -> MemoryWrite:
+        """Forget a decision, putting the posting back into ordinary results.
+
+        A separate verb rather than passing null to `mark_jobs`: claiming something and retracting
+        it are different acts, and a magic null is the wrong place to hide the difference.
+        """
+        return _decide(refs, None, "")
+
+    def _decide(refs: list[str], decision: PostingDecision | None, note: str) -> MemoryWrite:
+        written = JsonlPostingMemory.from_env().decide(tuple(refs), decision, note)
+        if written.unknown:
+            raise ValueError(
+                "Nothing was written. These do not match any posting in the journal: "
+                + ", ".join(written.unknown)
+            )
+        if written.error:
+            raise ValueError(f"The journal could not be written: {written.error}")
+        return written
+
+    @server.tool()
     def describe_profile() -> dict[str, Any]:
         """Report who the engine is searching as, so the seeker can check it before trusting a run.
 
@@ -167,6 +218,8 @@ def build_server() -> MCPServer:
         max_results: int | None = None,
         max_age_days: int = 30,
         min_fit: float = 0.0,
+        new_only: bool = False,
+        include_dismissed: bool = False,
         stated_only: bool = False,
         sort: SortOrder = SortOrder.FIT,
         sources: list[str] | None = None,
@@ -208,6 +261,8 @@ def build_server() -> MCPServer:
                 terms=terms or profile.search_terms,
                 scan_depth_per_source=scan_depth,
                 min_fit=min_fit,
+                new_only=new_only,
+                include_dismissed=include_dismissed,
                 max_results=max_results,
                 max_age_days=max_age_days,
                 stated_only=stated_only,

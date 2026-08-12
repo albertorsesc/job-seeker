@@ -132,6 +132,10 @@ job-seeker mark applied jk_3c3554201a58a531 --note "referred by K"
 job-seeker unmark jk_9f2c1a3b04d7e551            # changed my mind
 ```
 
+Every posting in the HTML report carries its own `job-seeker mark dismissed ...` line, so the
+loop closes from the page you are reading back to the terminal without looking anything up. The
+CSV carries `handle`, `new`, `times_seen` and `decision` as four new columns at the end.
+
 A reference is the handle printed with each posting, the raw identity key, or the posting's URL,
 so you can paste whichever you already have. Marking is all or nothing: if one reference does not
 match, nothing is written and the unmatched ones are listed, because a dismissal landing on the
@@ -239,7 +243,9 @@ Four tools, and the agent is meant to use them together:
 | `describe_engine` | Is this configured and able to search? Names the problem when it is not |
 | `describe_profile` | **Who am I searching as?** Your name, location, skills, and the eligibility rules that decide every verdict |
 | `list_sources` | Which boards exist, and can each one run right now |
-| `find_jobs` | The search. `terms`, `scan_depth`, `max_results`, `min_fit`, `max_age_days`, `sources` |
+| `find_jobs` | The search. `terms`, `scan_depth`, `max_results`, `min_fit`, `new_only`, `include_dismissed`, `max_age_days`, `sources` |
+| `mark_jobs` | Record that you applied to a posting, or that you want it gone. The agent is told never to infer this |
+| `unmark_jobs` | Undo that |
 
 `describe_profile` exists because a misconfigured profile does not error, it answers confidently for
 the wrong person. An agent should state whose profile it used before you act on the results.

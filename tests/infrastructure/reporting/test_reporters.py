@@ -9,13 +9,16 @@ from __future__ import annotations
 import csv
 import io
 import json
+from datetime import UTC, datetime
 
+from job_seeker.domain.memory import PostingDecision
 from job_seeker.domain.models import (
     CurrencySource,
     Eligibility,
     EligibilityStatus,
     FitScore,
     Job,
+    PostingHistory,
     Relevance,
     SalaryPeriod,
     SalaryRange,
@@ -374,3 +377,93 @@ class TestReporterFactory:
             assert "pdf" in str(exc)
         else:  # pragma: no cover
             raise AssertionError("expected ValueError for an unknown format")
+
+
+class TestMemoryIsReachableFromThePage:
+    """HTML is the default format, so a handle that appears only in JSON is a marking loop nobody
+    can reach: the seeker would have to re-run the search and dig it out by hand."""
+
+    @staticmethod
+    def _scored(**history: object) -> ScoredJob:
+        return ScoredJob(
+            job=Job(title="AI Engineer", company="Acme", url="https://a.test/1", source="fake"),
+            fit=FitScore(value=0.5, raw=5, matched={}),
+            relevance=Relevance(keep=True, reason="title matches"),
+            eligibility=Eligibility(status=EligibilityStatus.GLOBAL, reason="open worldwide"),
+            history=PostingHistory(key="acme|ai engineer", handle="jk_abc123", **history),  # type: ignore[arg-type]
+        )
+
+    def _render(self, scored: ScoredJob) -> str:
+        return HtmlReporter().render(SearchResult(query=SearchQuery(), jobs=[scored]))
+
+    def test_a_new_posting_is_badged(self) -> None:
+        assert "NEW" in self._render(self._scored())
+
+    def test_a_posting_seen_before_is_not_badged_new(self) -> None:
+        html = self._render(self._scored(first_seen_at=datetime(2026, 7, 12, tzinfo=UTC)))
+        assert "NEW" not in html
+
+    def test_it_says_how_often_a_posting_has_been_shown(self) -> None:
+        """What lets a reader sanity-check the badge instead of trusting it.
+
+        The date is expected in local time rather than hardcoded, because that is what the report
+        shows: a human reading it wants the day they were at their desk, not a UTC instant.
+        """
+        first_seen = datetime(2026, 7, 12, tzinfo=UTC)
+        html = self._render(self._scored(first_seen_at=first_seen, times_seen=3))
+        assert f"shown 3 times since {first_seen.astimezone().strftime('%d %b')}" in html
+
+    def test_a_posting_shown_once_is_not_described_in_the_plural(self) -> None:
+        html = self._render(
+            self._scored(first_seen_at=datetime(2026, 7, 12, tzinfo=UTC), times_seen=1)
+        )
+        assert "shown once since" in html
+
+    def test_every_posting_carries_the_command_that_dismisses_it(self) -> None:
+        """The line that closes the loop from the page back to the terminal."""
+        assert "job-seeker mark dismissed jk_abc123" in self._render(self._scored())
+
+    def test_a_decided_posting_offers_the_command_that_reverses_it(self) -> None:
+        html = self._render(self._scored(decision=PostingDecision.DISMISSED))
+        assert "job-seeker unmark jk_abc123" in html
+        assert "dismissed" in html
+
+    def test_a_run_with_no_memory_says_nothing_about_it(self) -> None:
+        """Silence rather than a "not new" badge: the page must not tell the reader something the
+        run could not determine."""
+        scored = self._scored()
+        without = scored.model_copy(update={"history": None})
+        html = self._render(without)
+        assert "NEW" not in html
+        assert "job-seeker mark" not in html
+
+    def test_a_handle_is_escaped_like_everything_else(self) -> None:
+        scored = self._scored()
+        hostile = scored.model_copy(
+            update={"history": PostingHistory(key="k", handle="jk_<script>alert(1)</script>")}
+        )
+        assert "<script>" not in self._render(hostile)
+
+
+class TestTheCsvCarriesMemoryWithoutMovingAnything:
+    @staticmethod
+    def _rows(scored: ScoredJob) -> list[dict[str, str]]:
+        rendered = CsvReporter().render(SearchResult(query=SearchQuery(), jobs=[scored]))
+        return list(csv.DictReader(io.StringIO(rendered)))
+
+    def test_the_new_columns_are_at_the_end(self) -> None:
+        """Appended, so a spreadsheet or script someone already built keeps working."""
+        rendered = CsvReporter().render(SearchResult(query=SearchQuery()))
+        header = rendered.splitlines()[0].split(",")
+        assert header[-4:] == ["handle", "new", "times_seen", "decision"]
+
+    def test_it_carries_the_handle_a_mark_command_takes(self) -> None:
+        scored = TestMemoryIsReachableFromThePage._scored()
+        assert self._rows(scored)[0]["handle"] == "jk_abc123"
+
+    def test_a_run_with_no_memory_leaves_the_cells_empty_rather_than_false(self) -> None:
+        """A column claiming a posting is not new, on a run where nothing could be determined, is
+        a spreadsheet full of confident wrong answers."""
+        scored = TestMemoryIsReachableFromThePage._scored().model_copy(update={"history": None})
+        row = self._rows(scored)[0]
+        assert (row["new"], row["handle"], row["decision"]) == ("", "", "")
