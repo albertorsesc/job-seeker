@@ -290,6 +290,10 @@ Adding a board is one adapter file plus one line in the registry. Nothing in the
 
 ZipRecruiter is blocked by Cloudflare for scrapers and is not supported.
 
+What each board actually returns, and the steps for adding one, are in
+[docs/sources.md](docs/sources.md). The layer rules and why they are shaped that way are in
+[docs/architecture.md](docs/architecture.md).
+
 ## Limitations worth knowing
 
 - **Three boards today.** Coverage is genuinely partial, and the engine tells you so on every run
