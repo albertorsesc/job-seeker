@@ -225,6 +225,60 @@ class TestAnAgentCanCloseTheLoop:
         assert "Never infer it" in instructions
 
 
+class TestAToolRefusesWhatItCannotHonour:
+    """An argument the server drops is a request it answered without meeting.
+
+    The concrete bite: the output schema publishes the scan bound inside `query` as
+    `scan_depth_per_source` while the tool spells it `scan_depth`, so an agent reading a result and
+    reusing that name got a run at every default and was told it succeeded. Observed exactly that
+    before this landed.
+    """
+
+    async def test_an_argument_the_tool_does_not_have_is_refused(
+        self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        monkeypatch.setenv("JOB_SEEKER_PROFILE", str(_write_profile(tmp_path)))
+        server = mcp_server.build_server()
+        with pytest.raises(Exception, match="scan_depth_per_source"):
+            await server.call_tool("find_jobs", {"scan_depth_per_source": 60})
+
+    @pytest.mark.parametrize(
+        "tool", ["find_jobs", "list_sources", "describe_engine", "describe_profile", "mark_jobs"]
+    )
+    async def test_every_tool_refuses_it_not_just_the_search(
+        self, tool: str, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        monkeypatch.setenv("JOB_SEEKER_PROFILE", str(_write_profile(tmp_path)))
+        server = mcp_server.build_server()
+        with pytest.raises(Exception, match="invented_argument"):
+            await server.call_tool(tool, {"invented_argument": 1})
+
+    async def test_a_valid_call_still_works(
+        self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        """The half that would make this a bad trade if it broke."""
+        monkeypatch.setenv("JOB_SEEKER_PROFILE", str(_write_profile(tmp_path)))
+        monkeypatch.setattr(defaults, "_BUILTINS", {"fake": lambda: FakeSource("fake")})
+        payload = await _structured(
+            mcp_server.build_server(), "find_jobs", {"terms": ["engineer"], "scan_depth": 5}
+        )
+        assert payload["query"]["scan_depth_per_source"] == 5
+
+    async def test_the_agent_is_told_before_it_calls(self) -> None:
+        """Enforcing a rule nothing announced would just move the surprise. The schema says so."""
+        tool = next(
+            t for t in await mcp_server.build_server().list_tools() if t.name == "find_jobs"
+        )
+        assert tool.input_schema.get("additionalProperties") is False
+
+    async def test_the_reach_past_the_public_surface_still_reaches(self) -> None:
+        """Pinned deliberately. There is no supported hook for this, so an SDK change must fail
+        here rather than quietly restoring the silent-default behaviour."""
+        tool = mcp_server.build_server()._tool_manager.get_tool("find_jobs")
+        assert tool is not None
+        assert tool.fn_metadata.arg_model.model_config.get("extra") == "forbid"
+
+
 class TestTheAgentIsToldWhatItWillReceive:
     """`find_jobs` returned `dict[str, Any]`, so `tools/list` published no output schema at all.
 

@@ -275,6 +275,7 @@ def build_server() -> MCPServer:
             raise ValueError(describe_bounds_error(exc, _FIELD_PARAMS)) from exc
         return _fit_for_context(execute_search(profile, query, sources))
 
+    _refuse_unknown_arguments(server)
     return server
 
 
@@ -332,6 +333,37 @@ def _profile_problem() -> str | None:
     except ProfileError as exc:
         return str(exc)
     return None
+
+
+def _refuse_unknown_arguments(server: MCPServer) -> None:
+    """Make every tool reject an argument it cannot honour, instead of ignoring it.
+
+    The SDK builds a pydantic model from each tool's signature and validates calls against it, and
+    that model keeps pydantic's default of dropping anything it does not recognise. So an agent
+    that passes a name this server does not have gets a run at every default and is told it
+    succeeded.
+
+    That is not hypothetical. The output schema publishes the scan bound inside `query` as
+    `scan_depth_per_source` while the tool spells it `scan_depth`, so an agent reading a result and
+    reusing the name it saw there gets a shallower search and a confident answer. `Profile` already
+    uses `extra="forbid"` against exactly this shape of mistake, made by a human in YAML.
+
+    Two changes, because they serve different readers. Forbidding extras on the argument model is
+    what makes the call fail. Marking the published schema `additionalProperties: false` is what
+    tells an agent so before it calls, and the SDK builds that schema at registration, so setting
+    the model alone would enforce a rule nothing had announced.
+
+    **This reaches past the SDK's public surface**, which the rest of this module no longer does.
+    There is no supported hook: `tool()` takes no model configuration. The reach is pinned by tests
+    that fail loudly if either half stops working, which is what happened the last time this file
+    depended on a private attribute, and that ended in a clean migration rather than a silent
+    regression.
+    """
+    for tool in server._tool_manager.list_tools():
+        model = tool.fn_metadata.arg_model
+        model.model_config["extra"] = "forbid"
+        model.model_rebuild(force=True)
+        tool.parameters["additionalProperties"] = False
 
 
 def main() -> int:
