@@ -31,54 +31,18 @@ be delegated to a hosted assistant.
 
 ## 2. Strategies combined (from the best job-search repos)
 
-Analyzed from https://github.com/topics/job-search and https://github.com/topics/remote-jobs. This
-project is a synthesis of what each does best, plus our own eligibility layer:
+A synthesis of what the best job-search repos each do well, plus this project's own eligibility
+layer. The per-board facts, all captured from live runs, and the steps for adding a board are in
+**[docs/sources.md](docs/sources.md)**. They live there rather than here because a contributor
+reads `docs/`, and two copies of a board's quirks would drift the week a board changes.
 
 | Source repo | What we take |
 |---|---|
-| `speedyapply/JobSpy` | Multi-board scraping (Indeed, LinkedIn, Glassdoor, ZipRecruiter, Google). Wrapped as an **optional** source adapter (`python-jobspy`) when built, because it is heavy and rate-limit prone. Add the extra with the adapter, not before. |
-| `pranavv00/devjobs.site` (DevJobsHub) | Remote-first aggregation pattern over WeWorkRemotely, Remotive, RemoteOK, WorkingNomads. Their `clean_html` idea is reimplemented in `sources/base.py`. |
-| Himalayas public API | The eligibility star: every posting carries structured `locationRestrictions` (list of country/region strings) and `timezoneRestrictions` (list of UTC offsets). This is what makes precise eligibility filtering possible for any seeker location. |
-| `santifer/career-ops`, `MadsLorentzen/ai-job-search` (top-starred Claude Code plugins) | The **agent layer** pattern: grade/score postings, orchestrate "find me the best job" as agent tools. We express this as our MCP tools plus profile-driven scoring, but we do NOT install these plugins (they take over an agent's tool loop). |
-| **Our own contribution** | Profile-driven weighted scoring, an eligibility classifier (US-only / timezone-lock / region detection), noise filtering (non-engineering titles, human-"agent" false positives), dedup, and multi-format reporting. |
-
-### Verified board facts (captured from live runs; keep in mind when writing adapters)
-
-- **Himalayas**: `GET https://himalayas.app/jobs/api?limit=20&offset=N`. `limit` is capped at 20 per
-  page regardless of what you pass. Filter params (`title=`, `search=`, `category=`) are **ignored**;
-  the API always returns the full recency-ordered feed (~103k live postings). So you paginate and
-  filter client-side. Job fields include `title, excerpt, companyName, minSalary, maxSalary, currency,
-  seniority, locationRestrictions (list[str]), timezoneRestrictions (list[float]), categories (list),
-  description, pubDate, applicationLink, guid`. A full scan is ~5,155 pages; be polite (~0.15s delay,
-  back off on HTTP 429, stop after 3 consecutive empty pages).
-- **Remotive**: `GET https://remotive.com/api/remote-jobs?category=software-dev`. Under load it
-  throttles and ignores `search=`/`category=` (returns the same ~39). Fields: `title, company_name,
-  description, url, publication_date, salary, candidate_required_location, job_type`.
-  `candidate_required_location` holds two kinds of value in one comma-separated list: places
-  ("Germany", "Europe", "Worldwide") and timezone bands ("European timezones", "USA timezones",
-  4 of 20 postings in one window). A band is not a place, and the adapter routes it to
-  `timezone_restrictions` so the timezone rule reads it.
-- **RemoteOK**: `GET https://remoteok.com/api`. First array element is legal boilerplate, skip it.
-  Filter by `tags`. Default DevJobsHub filter is dev-only; **broaden** to include ai/ml/llm/
-  machine-learning/data tags. Fields: `position, company, description, url, date, tags, salary_min,
-  salary_max, location`.
-- **WeWorkRemotely**: RSS at `https://weworkremotely.com/remote-jobs.rss`, exactly 100 items, ten
-  per category. `?page=2` returns the same hundred, so there is nothing to paginate. Fields:
-  `title, region, country, state, skills, category, type, description, pubDate, expires_at, guid,
-  link`. Title is `"Company: Role"`, split on the first `": "`. `pubDate` and `expires_at` are
-  RFC 2822 dates, not relative ones. There is no pay field.
-  **`region` is not a restriction:** 93 of 100 items say "Anywhere in the World" and 14 of those
-  also name a `country` that restricts them, one to the US alone. `country` is the eligibility
-  field. It lists ISO 3166 official names ("United States of America"), each prefixed by its flag
-  emoji, separated by commas with an Oxford "and"; split on the flags, since "Bosnia and
-  Herzegovina" contains the separator word.
-- **WorkingNomads**: RSS at `https://www.workingnomads.com/jobs/feed/development` (returned 0 in one
-  run; treat as best-effort, must not break the pipeline if empty).
-- **ZipRecruiter**: blocked by Cloudflare 403 for scrapers; do not rely on it.
-- **LinkedIn "Worldwide"** (via JobSpy): returns city-tagged jobs, not hire-from-anywhere. Do not
-  treat a LinkedIn worldwide result as globally eligible without reading the posting.
-
----
+| `speedyapply/JobSpy` | Multi-board scraping, wrapped as an optional adapter when built |
+| `pranavv00/devjobs.site` | Remote-first aggregation over WWR, Remotive, RemoteOK, WorkingNomads |
+| Himalayas public API | Structured `locationRestrictions` and `timezoneRestrictions`, which is what makes precise eligibility possible |
+| `santifer/career-ops`, `MadsLorentzen/ai-job-search` | The agent-layer pattern: grade postings, orchestrate as agent tools. We do not install these plugins |
+| **Our own contribution** | Profile-driven weighted scoring, the eligibility classifier, noise filtering, dedup, run-to-run memory, multi-format reporting |
 
 ## 3. Verified tech choices (do not re-litigate)
 
@@ -129,79 +93,9 @@ project is a synthesis of what each does best, plus our own eligibility layer:
 
 ## 4. Architecture (hexagonal: ports and adapters)
 
-Three layers. Dependencies point inward only, and that is enforced by `tests/test_architecture.py`,
-which reads every module's imports out of the AST and fails when an arrow turns around. The rule is
-a test, not a promise.
-
-```
-        infrastructure/entrypoints/     cli.py, mcp_server.py   (driving adapters + composition root)
-                     |
-                     v  calls a use case
-        application/                    use cases + ports.py     (may import domain only)
-                     ^  satisfies a Protocol
-                     |
-        infrastructure/                 sources/ reporting/ config/   (driven adapters)
-
-        domain/                         models, profile, services      (imports nothing of ours)
-```
-
-- **domain/** is the centre: entities, the profile, and the *reasoning*. Scoring, eligibility,
-  relevance and identity are business logic, so they live in `domain/services`, not behind ports.
-  Imports nothing of ours and no I/O library.
-- **application/** holds use cases and declares, in `ports.py`, what it needs the outside world to
-  do. It never imports infrastructure.
-- **infrastructure/** holds everything that touches the outside world, on both sides: driven
-  adapters (boards, reporters, config) and driving adapters (`entrypoints`).
-
-**The composition root is spread across infrastructure, and the shape is deliberate.** Each driven
-package owns the catalogue of its own adapters, because a list of boards belongs beside the boards
-rather than inside a driving adapter: `sources/defaults.py` names the boards, `reporting/__init__.py`
-names the reporters. `entrypoints/` names the concrete profile provider, selects from those
-catalogues, and calls `register_builtins()` once at startup. Nothing outside those three places may
-name a concrete adapter.
-
-Registration happens at startup and nowhere else. A library function that registers on the way past
-mutates global state on whatever thread its caller happened to be on, which is exactly what
-`sources/registry.py` warns against, and it makes the shared search path depend on state its
-signature does not mention.
-
-**Why the services are not ports.** A port exists to cross the boundary. `JobSource`, `Reporter` and
-`ProfileProvider` cross it: HTTP, a file, a rendered artifact. A scorer does not; it is pure
-reasoning over data already in hand. Putting it behind a port would push the product's actual
-thinking into an adapter and leave the domain holding nothing but data classes. If a scorer ever
-needs the network (an LLM judge), it becomes a port then, and the pure implementation stays.
-
-**Every third-party job provider sits behind `JobSource`.** Himalayas, Remotive, RemoteOK,
-WeWorkRemotely, WorkingNomads and JobSpy's boards reach the application through that Protocol and
-nothing else. A board's quirks (a 20-item page cap, boilerplate in row zero, an RSS title of
-"Company: Role") stop at its adapter. This is about providers, not libraries: pydantic in the domain
-is settled and fine.
-
-**SOLID mapping:**
-
-- **S:** an adapter fetches and normalizes one board; a domain service does one kind of reasoning; a
-  reporter renders and never filters.
-- **O:** a new board is one new adapter plus a registry entry, plus whatever new names for the world
-  it introduces. The first three land in `sources/`; the last lands in `domain/regions.py` as data,
-  because a board that calls a country something no other board calls it is adding a spelling, not a
-  rule. WeWorkRemotely added eleven. That is the domain being extended through a table rather than
-  through code, and it is expected: a contributor editing `regions.py` for a new board has not done
-  something wrong. The architecture test is what keeps the rest true.
-- **L:** every source is substitutable behind `fetch(query) -> SourceResult`, and **must not raise**:
-  a board being down is an expected outcome reported in `SourceResult.error`, not an exception, since
-  siblings are in flight on other threads.
-- **I:** small Protocols in `application/ports.py`. Structural, so an adapter satisfies one without
-  importing it, which is what keeps the arrow inward even at the type level.
-- **D:** use cases depend on Protocols; `entrypoints` injects the concrete adapters.
-
-**Concurrency:** `fetch()` is **synchronous**. The orchestrator runs sources in parallel with a
-`ThreadPoolExecutor`, so async never leaks into every layer. MCP tools call the sync use case.
-
-**Pipeline stages:** fan out sources concurrently -> collect -> dedupe -> score -> classify -> filter
--> rank by fit desc -> return a `SearchResult` carrying both the ranked jobs and per-source coverage,
-so a run where three of five boards failed is never mistaken for a healthy one.
-
----
+In **[docs/architecture.md](docs/architecture.md)**, with the layer rules, the SOLID mapping, why
+the domain services are not ports, and the pipeline stages. Moved out of this file so a human
+contributor finds it: `tests/test_architecture.py` enforces it either way.
 
 ## 5. The profile (configuration, not source)
 
