@@ -38,6 +38,7 @@ from job_seeker.domain.models import (
 )
 from job_seeker.domain.timezones import offsets_for_band
 from job_seeker.infrastructure.sources import base
+from job_seeker.infrastructure.sources.salary import salary_from_bounds
 from job_seeker.infrastructure.sources.scanning import collect
 
 _API_URL = "https://remotive.com/api/remote-jobs"
@@ -189,7 +190,7 @@ def _salary(text: str) -> SalaryRange | None:
         return note
     low, *rest = [f for f in figures if f is not None]
     return (
-        base.salary_from_bounds(
+        salary_from_bounds(
             low,
             rest[0] if rest else None,
             currency=_CURRENCY,

@@ -51,6 +51,12 @@ nothing else. A board's quirks (a 20-item page cap, boilerplate in row zero, an 
 "Company: Role") stop at its adapter. This is about providers, not libraries: pydantic in the domain
 is settled and fine.
 
+Inside `sources/`, `base.py` is the wire (HTTP and its politeness, JSON and XML decoding,
+markup, dates), `salary.py` turns a board's untrusted figures into a `SalaryRange`, and
+`scanning.py` holds the read loop the non-paginating boards share. Only `salary.py` imports
+our domain types, which is why it is not in `base`: a board publishing no pay should not sit
+downstream of the salary model.
+
 **SOLID mapping:**
 
 - **S:** an adapter fetches and normalizes one board; a domain service does one kind of reasoning; a

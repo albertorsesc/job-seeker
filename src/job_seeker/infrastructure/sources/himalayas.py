@@ -32,6 +32,7 @@ from job_seeker.domain.models import (
     SourceResult,
 )
 from job_seeker.infrastructure.sources import base
+from job_seeker.infrastructure.sources.salary import salary_from_bounds
 
 _API_URL = "https://himalayas.app/jobs/api"
 _PAGE_SIZE = 20  # the API caps a page here regardless of what `limit` asks for
@@ -186,10 +187,10 @@ def _salary(record: dict[str, Any]) -> SalaryRange | None:
 
     The currency is the only board-specific part: Himalayas reports one, so it is read rather than
     assumed. Everything else, including what to do with a figure the board should not have sent,
-    is shared in `base.salary_from_bounds`.
+    is shared in `salary_from_bounds`.
     """
     currency = str(record.get("currency") or "").strip() or None
-    return base.salary_from_bounds(
+    return salary_from_bounds(
         record.get("minSalary"),
         record.get("maxSalary"),
         currency=currency,

@@ -28,6 +28,7 @@ from job_seeker.domain.models import (
     SourceResult,
 )
 from job_seeker.infrastructure.sources import base
+from job_seeker.infrastructure.sources.salary import salary_from_bounds
 from job_seeker.infrastructure.sources.scanning import collect
 
 _API_URL = "https://remoteok.com/api"
@@ -107,9 +108,9 @@ def _salary(record: dict[str, Any]) -> SalaryRange | None:
 
     USD is asserted, not read: the /api endpoint exposes salary_min/max and no currency field. The
     assertion is this adapter's knowledge of its own board, which is why it is the one part not
-    shared with `base.salary_from_bounds`.
+    shared with `salary_from_bounds`.
     """
-    return base.salary_from_bounds(
+    return salary_from_bounds(
         record.get("salary_min"),
         record.get("salary_max"),
         currency="USD",
