@@ -37,6 +37,7 @@ from job_seeker.domain.models import (
     SourceResult,
 )
 from job_seeker.infrastructure.sources import base
+from job_seeker.infrastructure.sources.scanning import collect
 
 _FEED_URL = "https://weworkremotely.com/remote-jobs.rss"
 
@@ -59,7 +60,6 @@ class WeWorkRemotelySource:
 
     def fetch(self, query: SearchQuery, /) -> SourceResult:
         """Fetch the feed, normalize, and report. Never raises: a failure is a SourceResult.error."""
-        cutoff = base.age_cutoff(query.max_age_days)
         now = datetime.now(UTC)
         try:
             with base.build_client() as client:
@@ -67,22 +67,13 @@ class WeWorkRemotelySource:
         except httpx.HTTPError as exc:
             return SourceResult(source=self.name, error=f"{type(exc).__name__}: {exc}")
 
-        jobs: list[Job] = []
-        scanned = 0
-        for item in document.find_all("item"):
-            if not isinstance(item, Tag):
-                continue
-            scanned += 1
-            job = _normalize(item)
-            if job is None or base.is_stale(job.posted_at, cutoff) or _has_expired(item, now):
-                continue
-            jobs.append(job)
-            if len(jobs) >= query.scan_depth_per_source:
-                break
+        items = [item for item in document.find_all("item") if isinstance(item, Tag)]
+        scan = collect(items, _normalize, query, skip=lambda item: _has_expired(item, now))
 
-        # Always truncated. The feed is ten postings per category from a board that lists far more,
-        # and the page parameter is ignored, so even a run that read every item saw a window.
-        return SourceResult(source=self.name, jobs=jobs, scanned=scanned, truncated=True)
+        # Always truncated, whatever the scan says. The feed is ten postings per category from a
+        # board that lists far more, and the page parameter is ignored, so even a run that read
+        # every item saw a window.
+        return SourceResult(source=self.name, jobs=scan.jobs, scanned=scan.scanned, truncated=True)
 
 
 def _normalize(item: Tag) -> Job | None:
