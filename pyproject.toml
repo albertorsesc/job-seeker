@@ -38,7 +38,7 @@ dependencies = [
 # one codebase cannot satisfy both without branching on the SDK version in the entrypoint, and a
 # range that claims to support 1.x would be the same false declaration this line was written to
 # correct.
-mcp = ["mcp>=2,<3"]
+mcp = ["mcp>=2.2.0,<3"]
 dev = [
     "pytest>=8.0",
     "pytest-asyncio>=0.23",
